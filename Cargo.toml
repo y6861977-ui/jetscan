@@ -1,0 +1,15 @@
+[package]
+name = "jetscan"
+version = "0.1.0"
+edition = "2024"
+description = "Local, private, deterministic security scanner for developers"
+license = "Elastic-2.0"
+
+# Ноль внешних зависимостей — часть бренда и безопасности. Не добавлять.
+[dependencies]
+
+# Релизная сборка: один маленький самодостаточный файл.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,43 @@
+# Проверка на каждый push / PR на трёх ОС. Только first-party actions: у
+# security-сканера цепочка поставки должна быть минимальной.
+# Только main и PR (не каждая ветка и не теги): в приватном репозитории минуты
+# macOS считаются ×10, Windows ×2 от бесплатных 2000 в месяц.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.98.0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # тесты истории секретов используют git
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup default "$RUST_TOOLCHAIN"
+      - name: fmt
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: test
+        run: cargo test --locked
+      - name: self-scan (no secrets in this repository)
+        shell: bash
+        run: cargo run --locked --release -- secrets . --exit-code
