@@ -1,6 +1,7 @@
 # jetscan
 
-A local, private, deterministic security scanner for developers.
+Scan for leaked secrets, vulnerable dependencies and risky CI workflows — locally.
+No source-code upload. No account, no mandatory cloud.
 
 - **Leaked secrets** in files and git history: API keys, tokens, private keys, `.env` passwords.
 - **Known vulnerabilities** in dependencies (lockfiles checked against [OSV.dev](https://osv.dev)).
@@ -289,8 +290,9 @@ days, then stop — scans without them keep working.
 
 Honest limits of an offline key: it cannot be revoked before its date (keys are issued for
 a year, not forever), and moving the system clock back extends it. This is a trust model,
-on purpose: a license is what makes using jetscan in a company legal, and it pays for the
-work — it is not DRM.
+on purpose, not DRM. Using the free part of jetscan at work, in a company of any size, is
+allowed by its license; a Teams license is what lets your organization use the Teams features,
+and it pays for the work.
 
 ## Install
 
