@@ -60,6 +60,18 @@ Summary
 - **Zero dependencies.** Rust standard library only — no crates. HTTP goes through the
   system `curl`.
 
+## How it compares
+
+We ran jetscan against Gitleaks and Trivy with default settings and published everything,
+including where jetscan loses: [bench/README.md](bench/README.md), with scripts to repeat it.
+
+- **Quieter:** on 10 popular repositories jetscan flagged nothing that is not a secret;
+  Gitleaks flagged 10 such lines (`key='Asia/Singapore'`, `"float32-slice"`, …).
+- **Finds less in credential files:** on leaky-repo Gitleaks found 22 of 175 lines, jetscan 12 —
+  jetscan stays silent on weak-looking passwords in `.netrc`, `.pgpass` and FTP configs. Fixing it.
+- **Dependencies:** jetscan and Trivy agree on 837 advisories in 7 projects; the few
+  differences come from the databases (OSV vs Trivy's).
+
 ## Commands
 
 | Command | What it does | Network |
