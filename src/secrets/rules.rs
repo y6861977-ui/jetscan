@@ -3,7 +3,7 @@
 
 use super::{Confidence, Rule, RuleInfo, Span};
 
-static RULES: [Rule; 26] = [
+static RULES: [Rule; 27] = [
     Rule {
         info: RuleInfo {
             id: "aws-access-key",
@@ -211,6 +211,14 @@ static RULES: [Rule; 26] = [
             confidence: Confidence::Medium,
         },
         find: find_url_credentials,
+    },
+    Rule {
+        info: RuleInfo {
+            id: "digitalocean-token",
+            name: "DigitalOcean Token",
+            confidence: Confidence::High,
+        },
+        find: find_digitalocean_token,
     },
 ];
 
@@ -580,6 +588,14 @@ fn find_mailgun_api_key(line: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     add_fixed_prefixed(line, "key-", 32, is_ascii_hex, &mut spans);
     spans
+}
+
+fn find_digitalocean_token(line: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    for prefix in ["dop_v1_", "doo_v1_", "dor_v1_"] {
+        add_fixed_prefixed(line, prefix, 64, is_ascii_hex, &mut spans);
+    }
+    sorted(spans)
 }
 
 fn find_discord_bot_token(line: &str) -> Vec<Span> {
@@ -1104,6 +1120,7 @@ mod tests {
                 "telegram-bot",
                 "private-key",
                 "url-credentials",
+                "digitalocean-token",
             ]
         );
     }
@@ -1360,6 +1377,33 @@ mod tests {
         assert_not_detected("mailgun-api-key", &format!("{}{}", "key-", "a".repeat(31)));
         assert_not_detected("mailgun-api-key", &format!("{}{}", "key-", "a".repeat(33)));
         assert_not_detected("mailgun-api-key", &format!("{}{}z", "key-", "a".repeat(31)));
+    }
+
+    #[test]
+    fn digitalocean_token_formats_and_boundaries() {
+        let body = "0123456789aBcDeF".repeat(4);
+        for prefix in ["dop_v1_", "doo_v1_", "dor_v1_"] {
+            let token = format!("{prefix}{body}");
+            assert_detected("digitalocean-token", &format!("ключ='{token}'"), &token);
+            for invalid in [
+                format!("x{token}"),
+                format!("_{token}"),
+                format!("{token}f"),
+                format!("{token}z"),
+                format!("{token}_"),
+                format!("{prefix}{}", &body[..63]),
+                format!("{prefix}{}g", &body[..63]),
+                format!("{prefix}{}я", &body[..63]),
+            ] {
+                assert_not_detected("digitalocean-token", &invalid);
+            }
+        }
+        let first = format!("{}{}", "dop_v1_", body);
+        let second = format!("{}{}", "dor_v1_", body);
+        assert_eq!(
+            matches("digitalocean-token", &format!("{first};{second}")),
+            vec![first, second]
+        );
     }
 
     #[test]

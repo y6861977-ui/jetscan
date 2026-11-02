@@ -39,7 +39,9 @@ const secrets = [
   ['digitalocean', 'DigitalOcean token', 'infra/main.tf', (v) => `  token = "${v}"`, 'dop_v1_' + pick(HEX, 64)],
   ['huggingface', 'Hugging Face token', 'ml/train.py', (v) => `HF_TOKEN = "${v}"`, 'hf_' + pick(AZ + az, 34)],
   ['telegram', 'Telegram bot token', 'bot/telegram.py', (v) => `TOKEN = "${v}"`, `${pick('123456789', 1)}${pick(D, 9)}:AA${pick(URL, 33)}`],
-  ['discord', 'Discord bot token', 'bot/discord.js', (v) => `client.login("${v}");`, `MT${pick(B62, 22)}.${pick(URL, 6)}.${pick(URL, 38)}`],
+  // The first part of a Discord bot token is the bot's numeric id (a snowflake) in base64.
+  ['discord', 'Discord bot token', 'bot/discord.js', (v) => `client.login("${v}");`,
+    `${Buffer.from('1' + pick(D, 17)).toString('base64').replace(/=+$/, '')}.${pick(URL, 6)}.${pick(URL, 38)}`],
   ['rsa-key', 'RSA private key', 'deploy/id_rsa', (v) => v, pem],
   ['postgres-url', 'Database URL with password', 'docker-compose.yml', (v) => `      DATABASE_URL: ${v}`, `postgres://app:${pick(B62, 20)}@db.internal:5432/app`],
   ['env-password', 'Password in .env', '.env.production', (v) => `DB_PASSWORD=${v}`, pick(B62 + '!@#%', 20)],

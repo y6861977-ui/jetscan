@@ -32,11 +32,14 @@ NodeGoat OWASP/NodeGoat c5cb68a7084e4ae7dcc60e6a98768720a81841e8
 pygoat adeyosemanputra/pygoat 2aa4cc14f251e4a780e94e200aed6b36a5b15c21
 EOF
 
-echo; echo "== 1. Planted secrets (files and git history)"
-node "$here/planted.mjs" "$work/planted/repo" 7
-(cd planted/repo && "$JETSCAN" secrets . --json > ../jetscan.json || true
- "$GITLEAKS" git . --no-banner --log-level error --report-format json --report-path ../gitleaks.json || true)
-node "$here/score-planted.mjs" planted/truth.json planted/jetscan.json planted/gitleaks.json
+echo; echo "== 1. Planted secrets (files and git history), seeds 1-10"
+for seed in 1 2 3 4 5 6 7 8 9 10; do
+  node "$here/planted.mjs" "$work/planted-$seed/repo" "$seed" > /dev/null
+  (cd "planted-$seed/repo" && "$JETSCAN" secrets . --json > ../jetscan.json || true
+   "$GITLEAKS" git . --no-banner --log-level error --report-format json --report-path ../gitleaks.json || true)
+  echo "-- seed $seed"
+  node "$here/score-planted.mjs" "planted-$seed/truth.json" "planted-$seed/jetscan.json" "planted-$seed/gitleaks.json" | tail -3
+done
 
 echo; echo "== 2. leaky-repo (its own answer key and scoring method; files at HEAD)"
 (cd repos/leaky-repo && "$JETSCAN" secrets . --no-history --json > ../../out/leaky.jetscan.json || true

@@ -67,8 +67,10 @@ including where jetscan loses: [bench/README.md](bench/README.md), with scripts 
 
 - **Quieter:** on 10 popular repositories jetscan flagged nothing that is not a secret;
   Gitleaks flagged 10 such lines (`key='Asia/Singapore'`, `"float32-slice"`, …).
-- **Finds less in credential files:** on leaky-repo Gitleaks found 22 of 175 lines, jetscan 12 —
-  jetscan stays silent on weak-looking passwords in `.netrc`, `.pgpass` and FTP configs. Fixing it.
+- **Planted secrets of 23 popular services (10 random sets):** jetscan 230 of 230, Gitleaks 191.
+  The test is ours; Gitleaks covers many more services overall.
+- **leaky-repo** (an independent benchmark): jetscan 27 of 175 lines, Gitleaks 22. Gitleaks still
+  finds things jetscan does not there (keys exported in `.bashrc`, AWS credential files).
 - **Dependencies:** jetscan and Trivy agree on 837 advisories in 7 projects; the few
   differences come from the databases (OSV vs Trivy's).
 
