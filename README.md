@@ -12,31 +12,40 @@ No source-code upload. No account, no mandatory cloud.
 
 It runs on your machine. Your code never leaves it.
 
+<p align="center"><img src="docs/demo.svg" width="860" alt="jetscan scan . on a demo repository: an AWS key that exists only in git history, a critical vulnerability in minimist 1.2.5, and a workflow that expands a pull request title into a shell script"></p>
+
+Real output of jetscan 0.1.0 on a small demo repository: an AWS key that was deleted from the
+code but is still in a commit, a lockfile with minimist 1.2.5, and a `pull_request_target`
+workflow. The "What to do" advice is trimmed from the animation.
+
+<details><summary>The same run as text (trimmed the same way)</summary>
+
 ```
 $ jetscan scan .
 
-Committed to git (already in the repository — every clone has it)
-  ✗ settings.py:1:23  AWS Access Key ID [high]
-      AKIA************2HDL  fp 70370a0225a81b90
+jetscan secrets .
+Only in git history (deleted from files, still in commits)
+  ✗ a0a963b743 deploy.py:3  AWS Access Key ID [high]
+      AKIA************8KTD  fp 554b73de8bdd9554
+✗ Found 1 secret (1 high) — 1 only in git history
 
+jetscan deps .
   ✗ minimist 1.2.5  1 vulnerability (1 critical)  · package-lock.json
       CRITICAL  GHSA-xvch-5gv4-984h  CVE-2021-44906  Prototype Pollution in minimist
-  ✗ axios 0.21.0  25 vulnerabilities (12 high, 12 medium, 1 low)  · package-lock.json
-      HIGH      GHSA-3g43-6gmg-66jw  CVE-2026-44495  axios Vulnerable to Credential Theft…
-      HIGH      GHSA-43fc-jf86-j433  CVE-2026-25639  Axios is Vulnerable to Denial of Ser…
-      HIGH      GHSA-62hf-57xw-28j9  CVE-2026-42039  Axios: unbounded recursion in toFor…
-      … and 22 more — `jetscan deps --json` lists all
-  …
-
-What to do
   → minimist 1.2.5 → 1.2.6  fixes 1 vulnerability
-  → axios 0.21.0 → 0.33.0  fixes 25 vulnerabilities
-  → lodash 4.17.20 → 4.18.0  fixes 5 vulnerabilities
+Only package names and versions were sent to api.osv.dev — no code, no file paths.
+
+GitHub Actions (workflow files: known attack patterns, checked locally)
+  ✗ .github/workflows/greet.yml:7 — untrusted ${{ github.event.pull_request.title }} is expanded into a shell script
+      pass it through env (env: VALUE: ${{ github.event.pull_request.title }}) and use "$VALUE" in the script
 
 Summary
-  Secrets           ✗ 1 secret can leak (1 already committed)
-  Dependencies      ✗ 31 known vulnerabilities in 3 of 4 packages, 1 critical
+  Secrets           ✗ 1 secret can leak
+  Dependencies      ✗ 1 known vulnerability in 1 of 1 packages, 1 critical
+  GitHub Actions    ✗ 1 pattern an attacker can exploit
 ```
+
+</details>
 
 ## Why
 

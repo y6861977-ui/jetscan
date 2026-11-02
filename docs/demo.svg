@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 512" width="860" height="512" role="img" aria-label="jetscan scan . on a demo repository: finds an AWS key that exists only in git history, a critical vulnerability in minimist 1.2.5, and a GitHub Actions workflow that expands a pull request title into a shell script.">
+<style>
+text{font:13.5px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;fill:#c9d1d9;white-space:pre}
+.r{fill:#ff7b72}.g{fill:#3fb950}.d{fill:#8b949e}.b{fill:#e6edf3;font-weight:700}.y{fill:#e3b341}.w{fill:#e6edf3}
+</style>
+<rect width="860" height="512" rx="10" fill="#0d1117"/>
+<rect width="860" height="34" rx="10" fill="#161b22"/><rect y="24" width="860" height="10" fill="#161b22"/>
+<circle cx="22" cy="17" r="6" fill="#ff5f57"/><circle cx="42" cy="17" r="6" fill="#febc2e"/><circle cx="62" cy="17" r="6" fill="#28c840"/>
+<text x="430" y="22" text-anchor="middle" class="d" style="font-size:12px">~/demo-app</text>
+<clipPath id="type"><rect x="36.8" y="46" height="22" width="0"><animate attributeName="width" calcMode="discrete" values="0;0;8.15;16.3;24.450000000000003;32.6;40.75;48.900000000000006;57.050000000000004;65.2;73.35000000000001;81.5;89.65;97.80000000000001;105.95;114.10000000000001;0;0" keyTimes="0.0000;0.0500;0.0544;0.0588;0.0631;0.0675;0.0719;0.0763;0.0806;0.0850;0.0894;0.0938;0.0981;0.1025;0.1069;0.1113;0.9625;1" dur="16s" repeatCount="indefinite"/></rect></clipPath>
+<text x="20" y="62"><tspan class="g">$ </tspan></text>
+<text x="36.8" y="62" clip-path="url(#type)">jetscan scan .</text>
+<text x="20" y="102" opacity="0"><tspan class="b">jetscan secrets .</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.1800;0.1806;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="122" opacity="0"><tspan class="w">Only in git history (deleted from files, still in commits)</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.1956;0.1963;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="142" opacity="0"><tspan class="r">  ✗ </tspan><tspan>a0a963b743 deploy.py:3  </tspan><tspan class="r">AWS Access Key ID [high]</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.2031;0.2038;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="162" opacity="0"><tspan class="d">      AKIA************8KTD  fp 554b73de8bdd9554</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.2106;0.2113;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="182" opacity="0"><tspan class="r">✗ Found 1 secret (1 high) — 1 only in git history</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.2263;0.2269;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="222" opacity="0"><tspan class="b">jetscan deps .</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.2794;0.2800;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="242" opacity="0"><tspan class="r">  ✗ </tspan><tspan>minimist 1.2.5  1 vulnerability (1 critical)  · package-lock.json</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.2950;0.2956;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="262" opacity="0"><tspan>      </tspan><tspan class="r">CRITICAL</tspan><tspan>  GHSA-xvch-5gv4-984h  CVE-2021-44906  Prototype Pollution in minimist</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.3025;0.3031;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="282" opacity="0"><tspan class="g">  → </tspan><tspan>minimist 1.2.5 → 1.2.6  fixes 1 vulnerability</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.3100;0.3106;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="302" opacity="0"><tspan class="d">Only package names and versions were sent to api.osv.dev — no code, no file paths.</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.3175;0.3181;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="342" opacity="0"><tspan class="b">GitHub Actions</tspan><tspan class="d"> (workflow files: known attack patterns, checked locally)</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.3581;0.3588;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="362" opacity="0"><tspan class="r">  ✗ </tspan><tspan>.github/workflows/greet.yml:7</tspan><tspan> — untrusted </tspan><tspan class="y">${{ github.event.pull_request.title }}</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.3738;0.3744;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="382" opacity="0"><tspan>      is expanded into a shell script</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.3738;0.3744;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="422" opacity="0"><tspan class="b">Summary</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.4144;0.4150;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="442" opacity="0"><tspan>  Secrets           </tspan><tspan class="r">✗ 1 secret can leak</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.4238;0.4244;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="462" opacity="0"><tspan>  Dependencies      </tspan><tspan class="r">✗ 1 known vulnerability in 1 of 1 packages, 1 critical</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.4331;0.4338;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+<text x="20" y="482" opacity="0"><tspan>  GitHub Actions    </tspan><tspan class="r">✗ 1 pattern an attacker can exploit</tspan><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.4425;0.4431;0.9625;1" dur="16s" repeatCount="indefinite"/></text>
+</svg>
