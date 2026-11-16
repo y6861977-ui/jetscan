@@ -195,13 +195,15 @@ fn legacy_session_runs_every_free_tool_and_gates_the_paid_ones() {
         call(5, "resolve_plan", "{}"),
         call(6, "audit_web_source", "{}"),
         call(7, "audit_apk", r#"{"file":"demo.apk"}"#),
-        r#"{"jsonrpc":"2.0","id":8,"method":"ping"}"#.to_string(),
+        call(8, "audit_android_source", "{}"),
+        call(9, "audit_ios_source", "{}"),
+        r#"{"jsonrpc":"2.0","id":10,"method":"ping"}"#.to_string(),
     ];
     let before = fs::read(p.join(".github/workflows/triage.yml")).unwrap();
     let (code, msgs, stdout, stderr) = session(&p, &[], &lines, &[]);
     assert_eq!(code, 0, "{stderr}");
     // Every request answered, the notification not.
-    assert_eq!(msgs.len(), 9, "{stdout}");
+    assert_eq!(msgs.len(), 11, "{stdout}");
     assert!(!stdout.contains(&token()), "raw secret in MCP output");
 
     let init = reply(&msgs, 0).get("result").unwrap();
@@ -232,7 +234,9 @@ fn legacy_session_runs_every_free_tool_and_gates_the_paid_ones() {
             "scan_github_actions",
             "resolve_plan",
             "audit_web_source",
-            "audit_apk"
+            "audit_apk",
+            "audit_android_source",
+            "audit_ios_source"
         ]
     );
 
@@ -268,7 +272,12 @@ fn legacy_session_runs_every_free_tool_and_gates_the_paid_ones() {
     );
     assert!(!p.join("jetscan-plan.json").exists());
 
-    for (id, name) in [(6, "audit_web_source"), (7, "audit_apk")] {
+    for (id, name) in [
+        (6, "audit_web_source"),
+        (7, "audit_apk"),
+        (8, "audit_android_source"),
+        (9, "audit_ios_source"),
+    ] {
         let (err, text, structured) = tool(&msgs, id);
         assert!(!err && !structured, "{text}");
         assert!(
@@ -278,11 +287,15 @@ fn legacy_session_runs_every_free_tool_and_gates_the_paid_ones() {
         assert!(text.contains("https://jetscan.jet.kim"));
         // Not scanned: no findings, no V2 document.
         assert!(
-            !text.contains("schema_version") && !text.contains("WEB-") && !text.contains("APK-")
+            !text.contains("schema_version")
+                && !text.contains("WEB-")
+                && !text.contains("APK-")
+                && !text.contains("ANDROID-")
+                && !text.contains("IOS-")
         );
     }
     assert_eq!(
-        reply(&msgs, 8).get("result"),
+        reply(&msgs, 10).get("result"),
         Some(&Json::Obj(Default::default()))
     );
 }

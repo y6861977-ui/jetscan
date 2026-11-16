@@ -20,6 +20,8 @@ same files give the same answer every time.
 | `resolve_plan` | A fix plan and diff preview for workflow findings. **Never changes files** | none | Free |
 | `audit_web_source` | Next.js / Vite React source audit | none | Pro |
 | `audit_apk` | Android APK static audit (nothing is installed or run) | none | Pro |
+| `audit_android_source` | Android app source project audit: Gradle, Kotlin/Java, XML (nothing is built or run) | none | Pro |
+| `audit_ios_source` | iOS app source project audit: Xcode project, Swift/Objective-C, plists (nothing is built or run) | none | Pro |
 
 Every tool is read-only, and none of them applies a fix. `resolve_plan` returns a diff,
 and the AI is told to show it to you. Applying it is your call. You can run it yourself:
@@ -62,7 +64,7 @@ when that is the workspace. Pass a project folder instead.
 ## Install jetscan first
 
 Put `jetscan` (or `jetscan.exe`) on your `PATH`, or use its full path as the `command`
-in the configs below. Check it with `jetscan mcp --help`. `jetscan menu`, item 8, prints
+in the configs below. Check it with `jetscan mcp --help`. `jetscan menu`, item 10, prints
 the Claude Code command and the Cursor / VS Code configs with the full path of that
 jetscan filled in.
 
@@ -202,10 +204,11 @@ Sources: <https://docs.devin.ai/desktop/cascade/mcp> and
 
 ## Pro tools and the license key
 
-`audit_web_source` and `audit_apk` are part of jetscan Pro. For now a valid jetscan Teams
-key also unlocks them, including in its 14-day grace period after the expiry date (the same
-rule as the CLI's Teams flags). In the CLI, `jetscan web source` and `jetscan apk` are free
-while they are alpha. Without a key they do **not** scan. They return a
+`audit_web_source`, `audit_apk`, `audit_android_source` and `audit_ios_source` are part of
+jetscan Pro. For now
+a valid jetscan Teams key also unlocks them, including in its 14-day grace period after the
+expiry date (the same rule as the CLI's Teams flags). In the CLI, `jetscan web source`,
+`jetscan apk`, `jetscan android` and `jetscan ios` are free while they are alpha. Without a key they do **not** scan. They return a
 short, normal message for the AI to relay: what the check does, where to get a key
 (<https://jetscan.jet.kim>) and how to install it.
 

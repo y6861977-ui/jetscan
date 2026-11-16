@@ -13,7 +13,9 @@ use jetscan::finding_v2::{ModelError, RedactionPolicy, RemediationState, adapter
 use jetscan::json::Json;
 use jetscan::license::{self, Status};
 use jetscan::secrets::scan::ScanOptions;
-use jetscan::{apk_audit, deps, resolve, secrets, ui, web_audit, workflows};
+use jetscan::{
+    android_audit, apk_audit, deps, ios_audit, resolve, secrets, ui, web_audit, workflows,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -63,31 +65,49 @@ impl ToolResult {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
-    WebAudit,
-    ApkAudit,
+    Web,
+    Apk,
+    Android,
+    Ios,
 }
 
 impl Feature {
     fn tool(self) -> &'static str {
         match self {
-            Feature::WebAudit => "audit_web_source",
-            Feature::ApkAudit => "audit_apk",
+            Feature::Web => "audit_web_source",
+            Feature::Apk => "audit_apk",
+            Feature::Android => "audit_android_source",
+            Feature::Ios => "audit_ios_source",
         }
     }
     fn what(self) -> &'static str {
         match self {
-            Feature::WebAudit => {
+            Feature::Web => {
                 "a static audit of Next.js / Vite React source code: privileged keys in \
                  client code or public env variables (NEXT_PUBLIC_*, VITE_*), a Supabase \
                  service-role key in the browser, state-changing server handlers without a \
                  visible access check, non-constant HTML in DOM sinks, CORS that lets any site \
                  send credentials, public source maps"
             }
-            Feature::ApkAudit => {
+            Feature::Apk => {
                 "a static audit of an Android APK file (nothing is installed or run): \
                  manifest flags such as debuggable, exported components and cleartext \
                  traffic, backup settings, permissions, and keys embedded in resources \
                  and DEX code"
+            }
+            Feature::Android => {
+                "a static audit of an Android app's source project (Gradle, Kotlin/Java, XML; \
+                 nothing is built or run): exported components, debuggable/backup/cleartext \
+                 settings, R8 off in release, signing passwords and keystores in the project, \
+                 provider keys in code and buildConfigField, trust-all TLS, risky WebView \
+                 bridges, weak ciphers, secrets in logs"
+            }
+            Feature::Ios => {
+                "a static audit of an iOS app's source project (Xcode project, Swift/Objective-C, \
+                 plists; nothing is built or run): App Transport Security exceptions, get-task-allow \
+                 in release entitlements, provider keys and signing files in the repository, tokens \
+                 in UserDefaults, Keychain items readable while locked, trust-all URLSession \
+                 handlers, UIWebView and file:// web views, weak ciphers, secrets in logs"
             }
         }
     }
@@ -99,7 +119,7 @@ impl Feature {
 pub fn entitled(feature: Feature, status: &Status) -> bool {
     match feature {
         // Same as the CLI's Teams flags: the 14-day grace period still unlocks.
-        Feature::WebAudit | Feature::ApkAudit => {
+        Feature::Web | Feature::Apk | Feature::Android | Feature::Ios => {
             matches!(status, Status::Active { .. } | Status::Grace { .. })
         }
     }
@@ -260,6 +280,37 @@ returns a short notice on how to get one — relay that notice to the user as is
         required: &["file"],
         open_world: false,
     },
+    Def {
+        name: "audit_android_source",
+        title: "Audit an Android app's source project (jetscan Pro)",
+        description: "jetscan Pro. Static, offline audit of an Android Gradle project's source \
+inside the workspace — nothing is built or run: exported components and manifest flags (with \
+release/flavor manifests merged), debuggable or unminified release builds, signing passwords and \
+keystore files in the project, provider keys in code, resources and buildConfigField, trust-all \
+TrustManager/HostnameVerifier, WebView JavaScript bridges, weak ciphers, secrets in logs. Findings \
+carry file, line, column, confidence and a masked excerpt; Gradle values that are not literals are \
+reported as not fully checked. Read-only. Without a jetscan Pro or Teams license it does not scan \
+and returns a short notice on how to get one — relay that notice to the user as is.",
+        params: &[("path", "string", PATH_HELP)],
+        required: &[],
+        open_world: false,
+    },
+    Def {
+        name: "audit_ios_source",
+        title: "Audit an iOS app's source project (jetscan Pro)",
+        description: "jetscan Pro. Static, offline audit of an iOS app's source project inside the \
+workspace — nothing is built or run: App Transport Security in Info.plist, custom URL schemes, \
+get-task-allow and wildcard domains in entitlements (per Xcode build configuration), provider keys in \
+code, plists and xcconfig, signing files (.p12, AuthKey_*.p8) by name only, tokens in UserDefaults, \
+kSecAttrAccessibleAlways, trust-all URLSession challenge handlers, UIWebView and file:// access, weak \
+ciphers, secrets in logs and on the pasteboard. Findings carry file, line, column, confidence and a \
+masked excerpt; build settings that are not literals are reported as not fully checked. Read-only. \
+Without a jetscan Pro or Teams license it does not scan and returns a short notice on how to get \
+one — relay that notice to the user as is.",
+        params: &[("path", "string", PATH_HELP)],
+        required: &[],
+        open_world: false,
+    },
 ];
 
 /// `tools/list`: the tools in a fixed order.
@@ -387,6 +438,8 @@ pub fn call(name: &str, raw_args: &Json, env: &Env<'_>) -> Option<ToolResult> {
         "scan_github_actions" => scan_github_actions(&args, env),
         "resolve_plan" => resolve_plan(&args, env),
         "audit_web_source" => audit_web(&args, env),
+        "audit_android_source" => audit_android(&args, env),
+        "audit_ios_source" => audit_ios(&args, env),
         _ => audit_apk(&args, env),
     };
     Some(result.unwrap_or_else(|e| ToolResult::error(format!("{name}: {e}"))))
@@ -638,8 +691,8 @@ fn resolve_plan(a: &Args<'_>, env: &Env<'_>) -> Outcome {
 
 fn audit_web(a: &Args<'_>, env: &Env<'_>) -> Outcome {
     let status = (env.license)();
-    if !entitled(Feature::WebAudit, &status) {
-        return Ok(ToolResult::notice(paywall(Feature::WebAudit, &status)));
+    if !entitled(Feature::Web, &status) {
+        return Ok(ToolResult::notice(paywall(Feature::Web, &status)));
     }
     let dir = env.ws.resolve(a.str("path"), Kind::Dir)?;
     let r = web_audit::scan_source(&plain(&dir), &web_audit::WebScanOptions::default())
@@ -653,8 +706,8 @@ fn audit_web(a: &Args<'_>, env: &Env<'_>) -> Outcome {
 
 fn audit_apk(a: &Args<'_>, env: &Env<'_>) -> Outcome {
     let status = (env.license)();
-    if !entitled(Feature::ApkAudit, &status) {
-        return Ok(ToolResult::notice(paywall(Feature::ApkAudit, &status)));
+    if !entitled(Feature::Apk, &status) {
+        return Ok(ToolResult::notice(paywall(Feature::Apk, &status)));
     }
     let file = env.ws.resolve(a.str("file"), Kind::File)?;
     let r = apk_audit::scan_apk(&plain(&file), &apk_audit::ApkScanOptions::default())
@@ -663,6 +716,42 @@ fn audit_apk(a: &Args<'_>, env: &Env<'_>) -> Outcome {
     let target = env.ws.relative(&file);
     let cli = format!("jetscan apk {target}");
     report::render("audit_apk", &target, &cli, scan, &Notes::default()).map(ToolResult::report)
+}
+
+fn audit_android(a: &Args<'_>, env: &Env<'_>) -> Outcome {
+    let status = (env.license)();
+    if !entitled(Feature::Android, &status) {
+        return Ok(ToolResult::notice(paywall(Feature::Android, &status)));
+    }
+    let dir = env.ws.resolve(a.str("path"), Kind::Dir)?;
+    let r = android_audit::scan_source(&plain(&dir), &android_audit::AndroidScanOptions::default())
+        .map_err(|e| ui::sanitize_line(&e))?;
+    let scan = adapters::android(&r).map_err(v2_err)?;
+    let target = env.ws.relative(&dir);
+    let cli = format!("jetscan android {target}");
+    report::render(
+        "audit_android_source",
+        &target,
+        &cli,
+        scan,
+        &Notes::default(),
+    )
+    .map(ToolResult::report)
+}
+
+fn audit_ios(a: &Args<'_>, env: &Env<'_>) -> Outcome {
+    let status = (env.license)();
+    if !entitled(Feature::Ios, &status) {
+        return Ok(ToolResult::notice(paywall(Feature::Ios, &status)));
+    }
+    let dir = env.ws.resolve(a.str("path"), Kind::Dir)?;
+    let r = ios_audit::scan_source(&plain(&dir), &ios_audit::IosScanOptions::default())
+        .map_err(|e| ui::sanitize_line(&e))?;
+    let scan = adapters::ios(&r).map_err(v2_err)?;
+    let target = env.ws.relative(&dir);
+    let cli = format!("jetscan ios {target}");
+    report::render("audit_ios_source", &target, &cli, scan, &Notes::default())
+        .map(ToolResult::report)
 }
 
 #[cfg(test)]
@@ -685,7 +774,7 @@ mod tests {
 
     #[test]
     fn active_or_grace_license_is_entitled() {
-        for f in [Feature::WebAudit, Feature::ApkAudit] {
+        for f in [Feature::Web, Feature::Apk, Feature::Android, Feature::Ios] {
             assert!(entitled(
                 f,
                 &Status::Active {
@@ -723,7 +812,7 @@ mod tests {
     fn definitions_are_read_only_and_valid() {
         let list = list();
         let tools = list.as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 8);
         for t in tools {
             let name = t.get("name").and_then(Json::as_str).unwrap();
             assert!(name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
@@ -881,6 +970,138 @@ mod tests {
         assert!(!free.is_error);
         assert_eq!(free.texts.len(), 1);
         assert!(free.texts[0].starts_with("audit_apk was not run"));
+    }
+
+    #[test]
+    fn android_source_audit_is_gated_and_scans_with_a_license() {
+        let t = Temp::new("android");
+        let app = t.0.join("app");
+        std::fs::create_dir_all(app.join("src/main")).unwrap();
+        std::fs::write(t.0.join("settings.gradle"), "include ':app'\n").unwrap();
+        std::fs::write(
+            app.join("build.gradle"),
+            "apply plugin: 'com.android.application'\nandroid {\n  defaultConfig { minSdkVersion 24\n    targetSdkVersion 34 }\n  buildTypes { release { debuggable true\n    minifyEnabled true } }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("src/main/AndroidManifest.xml"),
+            "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"com.example.t\"><application android:allowBackup=\"false\"/></manifest>\n",
+        )
+        .unwrap();
+        for closed in [
+            Status::Free,
+            Status::Expired {
+                license: lic(-30),
+                days_over: 30,
+            },
+        ] {
+            let r = env_call(&t.0, closed, "audit_android_source", "{}", None);
+            assert!(!r.is_error);
+            assert_eq!(r.texts.len(), 1, "notice only, no scan");
+            assert!(
+                r.texts[0].starts_with("audit_android_source was not run"),
+                "{}",
+                r.texts[0]
+            );
+            assert!(!r.texts[0].contains("ANDROID-"), "{}", r.texts[0]);
+        }
+        for open in [
+            Status::Active {
+                license: lic(100),
+                days_left: 100,
+            },
+            Status::Grace {
+                license: lic(-3),
+                days_over: 3,
+            },
+        ] {
+            let r = env_call(&t.0, open, "audit_android_source", r#"{"path":"."}"#, None);
+            assert!(!r.is_error, "{}", r.texts[0]);
+            assert!(r.texts[0].contains("ANDROID-DEBUG-002"), "{}", r.texts[0]);
+            assert!(r.texts[0].contains("app/build.gradle"), "{}", r.texts[0]);
+            assert!(r.texts[0].contains("Network: none"), "{}", r.texts[0]);
+            assert!(
+                r.texts[1].contains("\"schema_version\":2"),
+                "{}",
+                r.texts[1]
+            );
+            assert!(r.texts[1].contains("android/android-debug-002/"));
+        }
+        let active = Status::Active {
+            license: lic(100),
+            days_left: 100,
+        };
+        let r = env_call(
+            &t.0,
+            active,
+            "audit_android_source",
+            r#"{"path":"../.."}"#,
+            None,
+        );
+        assert!(r.is_error, "outside the workspace: {}", r.texts[0]);
+    }
+
+    #[test]
+    fn ios_source_audit_is_gated_and_scans_with_a_license() {
+        let t = Temp::new("ios");
+        std::fs::create_dir_all(t.0.join("App")).unwrap();
+        std::fs::write(t.0.join("App/App.swift"), "import UIKit\n").unwrap();
+        std::fs::write(
+            t.0.join("App/Info.plist"),
+            "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n  <key>NSAppTransportSecurity</key>\n  <dict>\n    <key>NSAllowsArbitraryLoads</key>\n    <true/>\n  </dict>\n</dict>\n</plist>\n",
+        )
+        .unwrap();
+        for closed in [
+            Status::Free,
+            Status::Expired {
+                license: lic(-30),
+                days_over: 30,
+            },
+        ] {
+            let r = env_call(&t.0, closed, "audit_ios_source", "{}", None);
+            assert!(!r.is_error);
+            assert_eq!(r.texts.len(), 1, "notice only, no scan");
+            assert!(
+                r.texts[0].starts_with("audit_ios_source was not run"),
+                "{}",
+                r.texts[0]
+            );
+            assert!(!r.texts[0].contains("IOS-"), "{}", r.texts[0]);
+        }
+        for open in [
+            Status::Active {
+                license: lic(100),
+                days_left: 100,
+            },
+            Status::Grace {
+                license: lic(-3),
+                days_over: 3,
+            },
+        ] {
+            let r = env_call(&t.0, open, "audit_ios_source", r#"{"path":"."}"#, None);
+            assert!(!r.is_error, "{}", r.texts[0]);
+            assert!(r.texts[0].contains("IOS-ATS-001"), "{}", r.texts[0]);
+            assert!(r.texts[0].contains("App/Info.plist"), "{}", r.texts[0]);
+            assert!(r.texts[0].contains("Network: none"), "{}", r.texts[0]);
+            assert!(
+                r.texts[1].contains("\"schema_version\":2"),
+                "{}",
+                r.texts[1]
+            );
+            assert!(r.texts[1].contains("ios/ios-ats-001/"));
+        }
+        let active = Status::Active {
+            license: lic(100),
+            days_left: 100,
+        };
+        let r = env_call(
+            &t.0,
+            active,
+            "audit_ios_source",
+            r#"{"path":"../.."}"#,
+            None,
+        );
+        assert!(r.is_error, "outside the workspace: {}", r.texts[0]);
     }
 
     #[test]

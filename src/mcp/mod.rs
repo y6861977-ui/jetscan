@@ -51,8 +51,8 @@ const INSTRUCTIONS: &str = "jetscan runs local, deterministic security checks on
 of this workspace. Every tool is read-only. scan_secrets, scan_github_actions and resolve_plan \
 are offline; scan_dependencies is offline unless called with offline: false. Results never \
 contain secret values. resolve_plan never changes files: show its diff to the user, who applies \
-it. audit_web_source and audit_apk need a jetscan Pro license; without one they return a short \
-notice to relay to the user.";
+it. audit_web_source, audit_apk, audit_android_source and audit_ios_source need a jetscan Pro \
+license; without one they return a short notice to relay to the user.";
 
 pub const USAGE: &str = "\
 usage: jetscan mcp [--root <folder>]...
@@ -65,7 +65,8 @@ reports (MCP roots), else the current folder. Logs go to stderr.
   Others:       see docs/mcp/README.md
 
 Tools: scan_secrets, scan_dependencies (offline unless offline:false), scan_github_actions,
-resolve_plan (preview only), audit_web_source and audit_apk (jetscan Pro).";
+resolve_plan (preview only), audit_web_source, audit_apk, audit_android_source and
+audit_ios_source (jetscan Pro).";
 
 /// `jetscan mcp [--root <dir>]...`. Returns the process exit code.
 pub fn run(args: &[String]) -> i32 {
@@ -723,7 +724,7 @@ mod tests {
             assert!(res.get("resultType").is_none());
             let list = one(&mut s, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
             let tools = list.get("result").and_then(|r| r.get("tools")).unwrap();
-            assert_eq!(tools.as_array().unwrap().len(), 6);
+            assert_eq!(tools.as_array().unwrap().len(), 8);
         }
     }
 

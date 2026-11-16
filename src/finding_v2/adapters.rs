@@ -142,7 +142,7 @@ fn one_based(n: usize) -> Result<Option<u32>, ModelError> {
     Ok(Some(n))
 }
 
-// Web and APK share these types (`apk_audit::types` re-exports them).
+// Web, APK and Android share these types (`apk_audit::types` re-exports them).
 use crate::web_audit::types as scanner;
 
 fn severity(s: scanner::Severity) -> Severity {
@@ -284,6 +284,88 @@ pub fn apk(r: &crate::apk_audit::ApkScanResult) -> Result<ScanResultV2, ModelErr
             })
         })
         .collect::<Result<_, ModelError>>()?;
+    scanner_scan(
+        r.schema_version,
+        findings,
+        &r.checks,
+        &r.limitations,
+        &r.network_activities,
+    )
+}
+
+/// Android Source Audit -> V2 per `android_audit/HANDOFF_ANDROID.md` §4: real
+/// project-relative path, line and column; `component` is the manifest element
+/// or Gradle block (`service .SyncService`, `buildTypes.release`,
+/// `signingConfigs.release`); no archive entry. Ids (`android/<rule>/<16 hex>`,
+/// line-independent) and core fingerprints are kept. Module info (kinds, SDK
+/// levels, merged manifests) and statistics have no V2 field.
+pub fn android(r: &crate::android_audit::AndroidScanResult) -> Result<ScanResultV2, ModelError> {
+    let findings = r
+        .findings
+        .iter()
+        .map(|f| FindingV2 {
+            id: f.id.clone(),
+            rule_id: f.rule_id.into(),
+            title: f.title.clone(),
+            category: f.category.into(),
+            severity: severity(f.severity),
+            confidence: confidence(f.confidence),
+            location: SourceLocation {
+                relative_path: f.location.relative_path.clone(),
+                line: f.location.line,
+                column: f.location.column,
+                archive_entry: None,
+                component: f.location.component.clone(),
+            },
+            evidence: evidence(&f.evidence),
+            explanation: f.explanation.clone(),
+            remediation_id: f.remediation_id.clone(),
+            references: owned(&f.references),
+            cwe_ids: owned(&f.cwe_ids),
+            tags: f.tags.clone(),
+        })
+        .collect();
+    scanner_scan(
+        r.schema_version,
+        findings,
+        &r.checks,
+        &r.limitations,
+        &r.network_activities,
+    )
+}
+
+/// iOS Source Audit -> V2 per `ios_audit/HANDOFF_IOS.md` §4: real project-relative
+/// path, line and column; `component` is the Xcode target (`target App`) for
+/// Info.plist/entitlements findings or the plist/xcconfig key for named secrets;
+/// signing files have no line. No archive entry. Ids (`ios/<rule>/<16 hex>`,
+/// line-independent) and core fingerprints are kept. Project/target info and
+/// statistics have no V2 field.
+pub fn ios(r: &crate::ios_audit::IosScanResult) -> Result<ScanResultV2, ModelError> {
+    let findings = r
+        .findings
+        .iter()
+        .map(|f| FindingV2 {
+            id: f.id.clone(),
+            rule_id: f.rule_id.into(),
+            title: f.title.clone(),
+            category: f.category.into(),
+            severity: severity(f.severity),
+            confidence: confidence(f.confidence),
+            location: SourceLocation {
+                relative_path: f.location.relative_path.clone(),
+                line: f.location.line,
+                column: f.location.column,
+                archive_entry: None,
+                component: f.location.component.clone(),
+            },
+            evidence: evidence(&f.evidence),
+            explanation: f.explanation.clone(),
+            remediation_id: f.remediation_id.clone(),
+            references: owned(&f.references),
+            cwe_ids: owned(&f.cwe_ids),
+            tags: f.tags.clone(),
+        })
+        .collect();
     scanner_scan(
         r.schema_version,
         findings,

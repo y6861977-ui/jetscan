@@ -1,13 +1,16 @@
-//! Strict shared V2 JSON for `jetscan web source` and `jetscan apk`.
+//! Strict shared V2 JSON for `jetscan web source`, `jetscan apk`, `jetscan android` and
+//! `jetscan ios`.
 //! `src/main.rs` routes here when the arguments ask for V2 JSON (exact diff
 //! in `HANDOFF_FINDINGS.md`); everything else stays in the scanners' own CLIs.
 //!
 //! Same arguments, scan options and exit codes as `web_audit::cli` /
-//! `apk_audit::cli`: 0; with `--exit-code` 1 on a critical/high finding, else
+//! `apk_audit::cli` / `android_audit::cli` / `ios_audit::cli`: 0; with `--exit-code` 1 on a critical/high finding, else
 //! 2 if a check is partial/error; 2 on argument/read errors or if the V2 export
 //! is refused (fixed error code on stderr, nothing on stdout).
 use super::*;
+use crate::android_audit::{self, AndroidScanOptions};
 use crate::apk_audit::{self, ApkScanOptions};
+use crate::ios_audit::{self, IosScanOptions};
 use crate::ui;
 use crate::web_audit::{self, WebScanOptions};
 use std::io::Write;
@@ -25,9 +28,19 @@ struct Args {
     max_file_bytes: Option<u64>,
 }
 
-/// `Ok(None)` = show help. `web` expects `source` first and allows `--max-size`.
-fn parse(args: &[String], web: bool) -> Result<Option<Args>, String> {
-    let rest = if web {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Web,
+    Apk,
+    Android,
+    Ios,
+}
+
+/// `Ok(None)` = show help. `web` expects `source` first; `web`, `android` and
+/// `ios` scan a folder (default `.`) and allow `--max-size`; `apk` needs a file.
+fn parse(args: &[String], mode: Mode) -> Result<Option<Args>, String> {
+    let folder = mode != Mode::Apk;
+    let rest = if mode == Mode::Web {
         match args.first().map(String::as_str) {
             Some("source") => &args[1..],
             None | Some("-h") | Some("--help") => return Ok(None),
@@ -48,7 +61,7 @@ fn parse(args: &[String], web: bool) -> Result<Option<Args>, String> {
             "-h" | "--help" => return Ok(None),
             flag if is_v2_flag(flag) => v2 = true,
             "--exit-code" => exit_code = true,
-            "--max-size" if web => {
+            "--max-size" if folder => {
                 let kb: u64 = it
                     .next()
                     .ok_or("--max-size needs a number of KB")?
@@ -70,7 +83,7 @@ fn parse(args: &[String], web: bool) -> Result<Option<Args>, String> {
     }
     let path = match path {
         Some(path) => path,
-        None if web => PathBuf::from("."),
+        None if folder => PathBuf::from("."),
         None => return Ok(None),
     };
     Ok(Some(Args {
@@ -90,8 +103,18 @@ pub fn run_apk(args: &[String]) -> i32 {
     run_apk_to(args, &mut std::io::stdout().lock())
 }
 
+/// `jetscan android [folder] --json-v2 [--exit-code] [--max-size <KB>]`.
+pub fn run_android(args: &[String]) -> i32 {
+    run_android_to(args, &mut std::io::stdout().lock())
+}
+
+/// `jetscan ios [folder] --json-v2 [--exit-code] [--max-size <KB>]`.
+pub fn run_ios(args: &[String]) -> i32 {
+    run_ios_to(args, &mut std::io::stdout().lock())
+}
+
 fn run_web_to(args: &[String], out: &mut dyn Write) -> i32 {
-    let a = match parse(args, true) {
+    let a = match parse(args, Mode::Web) {
         Ok(Some(a)) => a,
         Ok(None) => return usage(out, web_audit::cli::USAGE),
         Err(e) => return arg_error(&e, "web"),
@@ -107,13 +130,45 @@ fn run_web_to(args: &[String], out: &mut dyn Write) -> i32 {
 }
 
 fn run_apk_to(args: &[String], out: &mut dyn Write) -> i32 {
-    let a = match parse(args, false) {
+    let a = match parse(args, Mode::Apk) {
         Ok(Some(a)) => a,
         Ok(None) => return usage(out, apk_audit::cli::USAGE),
         Err(e) => return arg_error(&e, "apk"),
     };
     match apk_audit::scan_apk(&a.path, &ApkScanOptions::default()) {
         Ok(r) => emit(adapters::apk(&r), a.exit_code, out),
+        Err(e) => scan_error(&e),
+    }
+}
+
+fn run_android_to(args: &[String], out: &mut dyn Write) -> i32 {
+    let a = match parse(args, Mode::Android) {
+        Ok(Some(a)) => a,
+        Ok(None) => return usage(out, android_audit::cli::USAGE),
+        Err(e) => return arg_error(&e, "android"),
+    };
+    let mut options = AndroidScanOptions::default();
+    if let Some(bytes) = a.max_file_bytes {
+        options.budgets.max_file_bytes = bytes;
+    }
+    match android_audit::scan_source(&a.path, &options) {
+        Ok(r) => emit(adapters::android(&r), a.exit_code, out),
+        Err(e) => scan_error(&e),
+    }
+}
+
+fn run_ios_to(args: &[String], out: &mut dyn Write) -> i32 {
+    let a = match parse(args, Mode::Ios) {
+        Ok(Some(a)) => a,
+        Ok(None) => return usage(out, ios_audit::cli::USAGE),
+        Err(e) => return arg_error(&e, "ios"),
+    };
+    let mut options = IosScanOptions::default();
+    if let Some(bytes) = a.max_file_bytes {
+        options.budgets.max_file_bytes = bytes;
+    }
+    match ios_audit::scan_source(&a.path, &options) {
+        Ok(r) => emit(adapters::ios(&r), a.exit_code, out),
         Err(e) => scan_error(&e),
     }
 }
@@ -248,6 +303,66 @@ mod tests {
     }
 
     #[test]
+    fn android_v2_output_roundtrips_with_scanner_exit_codes() {
+        let project = crate::android_audit::testutil::fixture("insecure-app");
+        let path = project.path().display().to_string();
+        let (code, json) = capture(run_android_to, &[&path, "--json-v2", "--exit-code"]);
+        assert_eq!(code, 1, "insecure-app has critical/high findings");
+        let parsed = wire::parse(json.trim_end(), &RedactionPolicy::default()).unwrap();
+        let r = android_audit::scan_source(project.path(), &AndroidScanOptions::default()).unwrap();
+        let direct = adapters::android(&r)
+            .unwrap()
+            .redacted(&RedactionPolicy::default())
+            .unwrap();
+        assert_eq!(parsed, direct);
+        assert_eq!(json.trim_end(), direct.render_json());
+        assert!(!parsed.as_scan().findings.is_empty());
+        assert_eq!(capture(run_android_to, &[&path, "--json-v2"]).0, 0);
+        // A tiny --max-size skips files: partial, so not clean.
+        let (code, json) = capture(run_android_to, &[&path, "--json-v2", "--max-size", "1"]);
+        assert_eq!(code, 0);
+        assert!(
+            !wire::parse(json.trim_end(), &RedactionPolicy::default())
+                .unwrap()
+                .as_scan()
+                .completed()
+        );
+        let missing = format!("{path}/missing-folder");
+        let (code, out) = capture(run_android_to, &[&missing, "--json-v2"]);
+        assert_eq!((code, out.as_str()), (2, ""));
+    }
+
+    #[test]
+    fn ios_v2_output_roundtrips_with_scanner_exit_codes() {
+        let project = crate::ios_audit::testutil::fixture("insecure-app");
+        let path = project.path().display().to_string();
+        let (code, json) = capture(run_ios_to, &[&path, "--json-v2", "--exit-code"]);
+        assert_eq!(code, 1, "insecure-app has critical/high findings");
+        let parsed = wire::parse(json.trim_end(), &RedactionPolicy::default()).unwrap();
+        let r = ios_audit::scan_source(project.path(), &IosScanOptions::default()).unwrap();
+        let direct = adapters::ios(&r)
+            .unwrap()
+            .redacted(&RedactionPolicy::default())
+            .unwrap();
+        assert_eq!(parsed, direct);
+        assert_eq!(json.trim_end(), direct.render_json());
+        assert!(!parsed.as_scan().findings.is_empty());
+        assert_eq!(capture(run_ios_to, &[&path, "--json-v2"]).0, 0);
+        // A tiny --max-size skips files: partial, so not clean.
+        let (code, json) = capture(run_ios_to, &[&path, "--json-v2", "--max-size", "1"]);
+        assert_eq!(code, 0);
+        assert!(
+            !wire::parse(json.trim_end(), &RedactionPolicy::default())
+                .unwrap()
+                .as_scan()
+                .completed()
+        );
+        let missing = format!("{path}/missing-folder");
+        let (code, out) = capture(run_ios_to, &[&missing, "--json-v2"]);
+        assert_eq!((code, out.as_str()), (2, ""));
+    }
+
+    #[test]
     fn arguments_and_help() {
         for list in [
             &["url", "--json-v2"][..],
@@ -264,6 +379,15 @@ mod tests {
             2
         );
         assert_eq!(capture(run_apk_to, &["a.apk", "b.apk", "--json-v2"]).0, 2);
+        assert_eq!(capture(run_android_to, &["a", "b", "--json-v2"]).0, 2);
+        assert_eq!(capture(run_android_to, &["--json-v2", "--nope"]).0, 2);
+        assert_eq!(
+            capture(run_android_to, &["--json-v2", "--max-size", "0"]).0,
+            2
+        );
+        assert_eq!(capture(run_ios_to, &["a", "b", "--json-v2"]).0, 2);
+        assert_eq!(capture(run_ios_to, &["--json-v2", "--nope"]).0, 2);
+        assert_eq!(capture(run_ios_to, &["--json-v2", "--max-size", "0"]).0, 2);
         for (run, list) in [
             (
                 run_web_to as fn(&[String], &mut dyn Write) -> i32,
@@ -272,6 +396,8 @@ mod tests {
             (run_web_to, &[]),
             (run_apk_to, &["--json-v2"]),
             (run_apk_to, &["--json-v2", "-h"]),
+            (run_android_to, &["--json-v2", "--help"]),
+            (run_ios_to, &["--json-v2", "-h"]),
         ] {
             let (code, text) = capture(run, list);
             assert_eq!(code, 0);

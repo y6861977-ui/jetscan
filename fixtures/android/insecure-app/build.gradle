@@ -1,0 +1,6 @@
+// Synthetic jetscan fixture: every value below is fake.
+buildscript {
+    ext {
+        compileSdkVersion = 34
+    }
+}

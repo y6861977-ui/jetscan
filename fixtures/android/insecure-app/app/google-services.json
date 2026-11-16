@@ -1,0 +1,9 @@
+{
+  "project_info": { "project_id": "jetscan-fixture" },
+  "client": [
+    {
+      "client_info": { "android_client_info": { "package_name": "com.example.insecure" } },
+      "api_key": [ { "current_key": "@@GOOGLE_API_KEY@@" } ]
+    }
+  ]
+}

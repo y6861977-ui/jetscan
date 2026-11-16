@@ -116,7 +116,7 @@ fn ai_editor_setup_shows_this_jetscan_path() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(b"8\n\n0\n").unwrap();
+    child.stdin.take().unwrap().write_all(b"10\n\n0\n").unwrap();
     let out = child.wait_with_output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "{text}");
@@ -157,7 +157,7 @@ fn workflow_project(tag: &str) -> (Temp, PathBuf, Vec<u8>) {
 fn resolve_writes_nothing_without_yes() {
     let (project, file, before) = workflow_project("resolve-no");
     for answer in ["", "y", "YES please", "no"] {
-        let (code, out, err) = jetscan(&["menu"], &project.0, &format!("5\n\n{answer}\n\n0\n"));
+        let (code, out, err) = jetscan(&["menu"], &project.0, &format!("7\n\n{answer}\n\n0\n"));
         assert_eq!(code, 0, "{out}\n{err}");
         assert!(out.contains("Apply these changes?"), "{out}\n{err}");
         assert!(out.contains("Cancelled. Nothing was changed."), "{out}");
@@ -169,7 +169,7 @@ fn resolve_writes_nothing_without_yes() {
 #[test]
 fn resolve_applies_and_verifies_after_yes() {
     let (project, file, before) = workflow_project("resolve-yes");
-    let (code, out, err) = jetscan(&["menu"], &project.0, "5\n\nyes\n\n0\n");
+    let (code, out, err) = jetscan(&["menu"], &project.0, "7\n\nyes\n\n0\n");
     assert_eq!(code, 0, "{out}\n{err}");
     assert!(out.contains("Step 4 of 4: verify"), "{out}\n{err}");
     assert!(out.contains("verified_specific_issue"), "{out}");

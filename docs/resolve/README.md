@@ -12,7 +12,7 @@ JetScan finds problems. Resolve helps you fix them, but on your terms:
   finding. It never says "your project is secure".
 
 Everything else (leaked keys, dependency upgrades, `permissions: write-all`,
-web and APK findings) gets clear advice, not an automatic edit.
+web, APK, Android and iOS findings) gets clear advice, not an automatic edit.
 
 ## The flow
 

@@ -1,9 +1,11 @@
-//! Web/APK adapters on real scanner output (fixtures), end to end:
+//! Web/APK/Android/iOS adapters on real scanner output (fixtures), end to end:
 //! scan -> adapt -> validate -> redacted JSON -> wire::parse -> compare.
 use super::output::{FINGERPRINT_LIMITATION, is_canonical_id, is_core_fingerprint};
 use super::*;
+use crate::android_audit::{self, AndroidScanOptions, AndroidScanResult};
 use crate::apk_audit::zip::tests::{Builder, Spec};
 use crate::apk_audit::{self, ApkScanOptions, ApkScanResult, zip};
+use crate::ios_audit::{self, IosScanOptions, IosScanResult};
 use crate::web_audit::{self, WebScanOptions, WebScanResult, testutil};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -31,6 +33,29 @@ fn fake_values() -> Vec<String> {
         format!("{}{}", "sb_publishable_", body(31)),
         body(24),
     ]
+    .into_iter()
+    // Android fixtures (`android_audit::testutil` placeholders).
+    .chain(
+        [
+            "STRIPE_SECRET",
+            "GITHUB_TOKEN",
+            "GOOGLE_API_KEY",
+            "SLACK_TOKEN",
+            "PEM_KEY",
+            "PEM_KEY_JSON",
+            "PASSWORD",
+            "PASSWORD2",
+        ]
+        .iter()
+        .map(|label| android_audit::testutil::expand(&format!("@@{label}@@"))),
+    )
+    // iOS fixtures use the same placeholders; these are the bodies of the
+    // signing-file fixtures, which must never be read into a finding.
+    .chain([
+        "fixture pkcs12 identity".to_string(),
+        "Salted__fixture".to_string(),
+    ])
+    .collect()
 }
 
 fn web_scan(root: &Path) -> WebScanResult {
@@ -453,6 +478,351 @@ fn apk_unreadable_archive_is_incomplete_not_clean() {
             .checks
             .iter()
             .any(|c| c.status == CheckStatus::Error && c.reason.is_some())
+    );
+}
+
+const ANDROID_FIXTURES: &[&str] = &["insecure-app", "hardened-app", "flavors-kts"];
+
+fn android_scan(root: &Path) -> AndroidScanResult {
+    android_audit::scan_source(root, &AndroidScanOptions::default()).expect("scan fixture")
+}
+
+#[test]
+fn android_fixtures_map_one_to_one_and_roundtrip() {
+    let mut total = 0;
+    let mut with_component = 0;
+    for name in ANDROID_FIXTURES {
+        let project = android_audit::testutil::fixture(name);
+        let r = android_scan(project.path());
+        let safe = export_and_reimport(&adapters::android(&r).unwrap());
+        let out = safe.as_scan();
+        assert_eq!(out.completed(), r.completed(), "{name}: completeness");
+        let android_checks: BTreeMap<_, _> = r
+            .checks
+            .iter()
+            .map(|c| (c.id.clone(), (status(c.status), c.reason.clone())))
+            .collect();
+        assert_eq!(checks_of(&out.checks), android_checks, "{name}: checks");
+        assert!(out.checks.iter().any(|c| c.id == "android.project"));
+        for l in &r.limitations {
+            assert!(out.limitations.contains(l), "{name}: limitation kept");
+        }
+        assert!(out.network_activities.is_empty());
+        assert_eq!(out.findings.len(), r.findings.len(), "{name}: no merge");
+        for a in &r.findings {
+            let f = out
+                .findings
+                .iter()
+                .find(|f| f.id == a.id)
+                .expect("android id kept as is");
+            assert!(f.id.starts_with("android/"));
+            assert_eq!(f.rule_id, a.rule_id);
+            assert_eq!(f.category, a.category);
+            assert_eq!(f.title, a.title);
+            assert_eq!(f.severity.to_string_for_test(), a.severity.label());
+            assert_eq!(f.confidence.to_string_for_test(), a.confidence.label());
+            assert_ne!(f.confidence, Confidence::Confirmed, "never confirmed");
+            assert_eq!(f.location.relative_path, a.location.relative_path);
+            assert_eq!(f.location.line, a.location.line);
+            assert_eq!(f.location.column, a.location.column);
+            assert_eq!(f.location.archive_entry, None);
+            if a.location.component.is_some() {
+                with_component += 1;
+                // Redaction may blank metadata wholesale, never edit it.
+                assert!(
+                    f.location.component == a.location.component
+                        || f.location.component.as_deref() == Some("[redacted]")
+                );
+            } else {
+                assert_eq!(f.location.component, None);
+            }
+            assert_eq!(f.remediation_id, a.remediation_id);
+            assert_eq!(f.cwe_ids.len(), a.cwe_ids.len());
+            if let Some(fp) = &a.evidence.fingerprint {
+                assert!(is_core_fingerprint(fp), "android emits core fingerprints");
+            }
+            assert_eq!(f.evidence.fingerprint, a.evidence.fingerprint);
+            assert!(
+                f.evidence.redacted_excerpt == a.evidence.redacted_excerpt
+                    || f.evidence.redacted_excerpt.as_deref() == Some("[redacted]")
+            );
+            total += 1;
+        }
+    }
+    assert!(total >= 20, "fixtures produced {total} findings");
+    assert!(
+        with_component > 0,
+        "components (manifest/Gradle) are carried"
+    );
+    let mut wrong = android_scan(android_audit::testutil::fixture("hardened-app").path());
+    wrong.schema_version = 1;
+    assert_eq!(
+        adapters::android(&wrong),
+        Err(ModelError("unsupported_schema_version"))
+    );
+}
+
+#[test]
+fn android_ids_survive_a_line_shift() {
+    let project = android_audit::testutil::fixture("insecure-app");
+    let export = |root: &Path| {
+        let safe = adapters::android(&android_scan(root))
+            .unwrap()
+            .redacted(&RedactionPolicy::default())
+            .unwrap();
+        safe.as_scan()
+            .findings
+            .iter()
+            .map(|f| {
+                (
+                    f.id.clone(),
+                    (f.location.relative_path.clone(), f.location.line),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let before = export(project.path());
+    let shifted_files = [
+        "app/build.gradle",
+        "app/src/main/AndroidManifest.xml",
+        "app/src/main/java/com/example/insecure/Crypto.kt",
+    ];
+    for file in shifted_files {
+        let path = project.path().join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text = if file.ends_with(".xml") {
+            text.replacen(
+                "<manifest",
+                "<!-- added -->
+
+<manifest",
+                1,
+            )
+        } else {
+            format!(
+                "// added
+
+{text}"
+            )
+        };
+        std::fs::write(&path, text).unwrap();
+    }
+    let after = export(project.path());
+    assert_eq!(
+        after.keys().collect::<Vec<_>>(),
+        before.keys().collect::<Vec<_>>(),
+        "same ids after the shift"
+    );
+    let mut shifted = 0;
+    for (id, (path, line)) in &before {
+        assert_eq!(after[id].0, *path);
+        if let (Some(line), true) = (line, shifted_files.contains(&path.as_str())) {
+            assert_eq!(after[id].1, Some(line + 2), "{path} moved down");
+            shifted += 1;
+        }
+    }
+    assert!(shifted > 0, "test must move at least one finding");
+}
+
+#[test]
+fn android_incomplete_scan_stays_incomplete() {
+    let t = testutil::TempProject::new();
+    t.write("settings.gradle", "include ':app'");
+    t.write(
+        "app/build.gradle",
+        "apply plugin: 'com.android.application'
+android { defaultConfig { minSdkVersion 24
+ targetSdkVersion 34 } }",
+    );
+    t.write(
+        "app/src/main/AndroidManifest.xml",
+        "<manifest><application></manifest>",
+    );
+    let r = android_scan(t.path());
+    assert!(!r.completed());
+    let safe = export_and_reimport(&adapters::android(&r).unwrap());
+    assert!(!safe.as_scan().completed());
+    assert!(
+        safe.as_scan()
+            .checks
+            .iter()
+            .any(|c| c.status == CheckStatus::Partial && c.reason.is_some())
+    );
+}
+
+const IOS_FIXTURES: &[&str] = &["insecure-app", "hardened-app", "xcodegen-app"];
+
+fn ios_scan(root: &Path) -> IosScanResult {
+    ios_audit::scan_source(root, &IosScanOptions::default()).expect("scan fixture")
+}
+
+#[test]
+fn ios_fixtures_map_one_to_one_and_roundtrip() {
+    let mut total = 0;
+    let mut with_component = 0;
+    let mut without_line = 0;
+    for name in IOS_FIXTURES {
+        let project = ios_audit::testutil::fixture(name);
+        let r = ios_scan(project.path());
+        let safe = export_and_reimport(&adapters::ios(&r).unwrap());
+        let out = safe.as_scan();
+        assert_eq!(out.completed(), r.completed(), "{name}: completeness");
+        let ios_checks: BTreeMap<_, _> = r
+            .checks
+            .iter()
+            .map(|c| (c.id.clone(), (status(c.status), c.reason.clone())))
+            .collect();
+        assert_eq!(checks_of(&out.checks), ios_checks, "{name}: checks");
+        assert!(out.checks.iter().any(|c| c.id == "ios.project"));
+        for l in &r.limitations {
+            assert!(out.limitations.contains(l), "{name}: limitation kept");
+        }
+        assert!(out.network_activities.is_empty());
+        assert_eq!(out.findings.len(), r.findings.len(), "{name}: no merge");
+        for a in &r.findings {
+            let f = out
+                .findings
+                .iter()
+                .find(|f| f.id == a.id)
+                .expect("ios id kept as is");
+            assert!(f.id.starts_with("ios/"));
+            assert_eq!(f.rule_id, a.rule_id);
+            assert_eq!(f.category, a.category);
+            assert_eq!(f.title, a.title);
+            assert_eq!(f.severity.to_string_for_test(), a.severity.label());
+            assert_eq!(f.confidence.to_string_for_test(), a.confidence.label());
+            assert_ne!(f.confidence, Confidence::Confirmed, "never confirmed");
+            assert_eq!(f.location.relative_path, a.location.relative_path);
+            assert_eq!(f.location.line, a.location.line);
+            assert_eq!(f.location.column, a.location.column);
+            assert_eq!(f.location.archive_entry, None);
+            if a.location.line.is_none() {
+                without_line += 1;
+            }
+            if a.location.component.is_some() {
+                with_component += 1;
+                // Redaction may blank metadata wholesale, never edit it.
+                assert!(
+                    f.location.component == a.location.component
+                        || f.location.component.as_deref() == Some("[redacted]")
+                );
+            } else {
+                assert_eq!(f.location.component, None);
+            }
+            assert_eq!(f.remediation_id, a.remediation_id);
+            assert_eq!(f.cwe_ids.len(), a.cwe_ids.len());
+            if let Some(fp) = &a.evidence.fingerprint {
+                assert!(is_core_fingerprint(fp), "ios emits core fingerprints");
+            }
+            assert_eq!(f.evidence.fingerprint, a.evidence.fingerprint);
+            assert!(
+                f.evidence.redacted_excerpt == a.evidence.redacted_excerpt
+                    || f.evidence.redacted_excerpt.as_deref() == Some("[redacted]")
+            );
+            total += 1;
+        }
+    }
+    assert!(total >= 20, "fixtures produced {total} findings");
+    assert!(
+        with_component > 0,
+        "components (target / plist key) are carried"
+    );
+    assert!(
+        without_line > 0,
+        "signing files keep a location without a line"
+    );
+    let mut wrong = ios_scan(ios_audit::testutil::fixture("hardened-app").path());
+    wrong.schema_version = 1;
+    assert_eq!(
+        adapters::ios(&wrong),
+        Err(ModelError("unsupported_schema_version"))
+    );
+}
+
+#[test]
+fn ios_ids_survive_a_line_shift() {
+    let project = ios_audit::testutil::fixture("insecure-app");
+    let export = |root: &Path| {
+        let safe = adapters::ios(&ios_scan(root))
+            .unwrap()
+            .redacted(&RedactionPolicy::default())
+            .unwrap();
+        safe.as_scan()
+            .findings
+            .iter()
+            .map(|f| {
+                (
+                    f.id.clone(),
+                    (f.location.relative_path.clone(), f.location.line),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let before = export(project.path());
+    let shifted_files = [
+        "InsecureApp/Info.plist",
+        "InsecureApp/InsecureApp.entitlements",
+        "InsecureApp/Session.swift",
+        "InsecureApp/Legacy.m",
+    ];
+    for file in shifted_files {
+        let path = project.path().join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text = if file.ends_with(".plist") || file.ends_with(".entitlements") {
+            text.replacen(
+                "<plist",
+                "<!-- added -->
+
+<plist",
+                1,
+            )
+        } else {
+            format!(
+                "// added
+
+{text}"
+            )
+        };
+        std::fs::write(&path, text).unwrap();
+    }
+    let after = export(project.path());
+    assert_eq!(
+        after.keys().collect::<Vec<_>>(),
+        before.keys().collect::<Vec<_>>(),
+        "same ids after the shift"
+    );
+    let mut shifted = 0;
+    for (id, (path, line)) in &before {
+        assert_eq!(after[id].0, *path);
+        if let (Some(line), true) = (line, shifted_files.contains(&path.as_str())) {
+            assert_eq!(after[id].1, Some(line + 2), "{path} moved down");
+            shifted += 1;
+        }
+    }
+    assert!(shifted > 0, "test must move at least one finding");
+}
+
+#[test]
+fn ios_incomplete_scan_stays_incomplete() {
+    let t = testutil::TempProject::new();
+    t.write(
+        "App/App.swift",
+        "import UIKit
+",
+    );
+    t.write(
+        "App/Info.plist",
+        "<plist version=\"1.0\"><dict><key>A</key>",
+    );
+    let r = ios_scan(t.path());
+    assert!(!r.completed());
+    let safe = export_and_reimport(&adapters::ios(&r).unwrap());
+    assert!(!safe.as_scan().completed());
+    assert!(
+        safe.as_scan()
+            .checks
+            .iter()
+            .any(|c| c.status == CheckStatus::Partial && c.reason.is_some())
     );
 }
 

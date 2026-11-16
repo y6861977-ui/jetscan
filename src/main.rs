@@ -23,6 +23,8 @@ usage: jetscan scan [path] [options]      secrets + vulnerable dependencies + Gi
 Alpha (rules may change; see `<command> --help`):
        jetscan web source [path]          Next.js / Vite React source audit
        jetscan apk <file.apk>             Android APK static audit (nothing is run)
+       jetscan android [path]             Android source project audit (Gradle, Kotlin/Java)
+       jetscan ios [path]                 iOS source project audit (Xcode, Swift/Objective-C)
        jetscan resolve plan [path]        fix plan -> preview -> apply --confirm -> verify
 
 Secrets: API keys, tokens, private keys, .env passwords in files and git history.
@@ -118,6 +120,12 @@ fn jetscan_main(args: &[String]) -> i32 {
         // APK Static Audit alpha: hidden from USAGE for the same reason as `web`.
         Some("apk") if wants_json_v2(args) => return finding_v2::cli::run_apk(&args[1..]),
         Some("apk") => return apk_audit::cli::run(&args[1..]),
+        // Android source audit alpha (Gradle project folder).
+        Some("android") if wants_json_v2(args) => return finding_v2::cli::run_android(&args[1..]),
+        Some("android") => return jetscan::android_audit::cli::run(&args[1..]),
+        // iOS source audit alpha (Xcode project folder).
+        Some("ios") if wants_json_v2(args) => return finding_v2::cli::run_ios(&args[1..]),
+        Some("ios") => return jetscan::ios_audit::cli::run(&args[1..]),
         // Free Resolve (plan / preview / apply --confirm / verify): hidden from USAGE until released.
         Some("resolve") => return jetscan::resolve::cli::run(&args[1..]),
         Some(other) => {
@@ -370,7 +378,7 @@ fn teams(flag: &str, status: &Status) -> Result<(), String> {
     }
 }
 
-/// `web`/`apk` alpha: V2 JSON goes through finding_v2's redacted export.
+/// `web`/`apk`/`android`/`ios` alpha: V2 JSON goes through finding_v2's redacted export.
 fn wants_json_v2(args: &[String]) -> bool {
     args.iter().any(|a| a == "--json-v2")
 }

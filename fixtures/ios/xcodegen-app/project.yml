@@ -1,0 +1,13 @@
+name: Generated
+options:
+  bundleIdPrefix: com.example
+targets:
+  Generated:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+    entitlements:
+      path: Sources/Generated.entitlements

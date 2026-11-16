@@ -119,15 +119,17 @@ pub fn run<R: BufRead, W: Write>(
             "2" => s.secrets(),
             "3" => s.web(),
             "4" => s.apk(),
-            "5" => s.resolve(),
-            "6" => s.machine(),
-            "7" => s.license(),
-            "8" => s.connect(),
+            "5" => s.android(),
+            "6" => s.ios(),
+            "7" => s.resolve(),
+            "8" => s.machine(),
+            "9" => s.license(),
+            "10" => s.connect(),
             "0" | "q" | "quit" | "exit" => return s.bye(),
             "" => continue,
             other => {
                 s.say(&ui::yellow(&format!(
-                    "'{}' is not on the list. Type a number from 0 to 8.",
+                    "'{}' is not on the list. Type a number from 0 to 10.",
                     ui::sanitize_line(other)
                 )));
                 continue;
@@ -184,7 +186,7 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
 
     fn show_menu(&mut self) {
         let alpha = ui::dim("(alpha)");
-        let items: [(&str, &str, bool); 9] = [
+        let items: [(&str, &str, bool); 11] = [
             (
                 "1",
                 "Scan a project for leaked secrets, vulnerable packages and risky GitHub Actions",
@@ -195,17 +197,23 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             ("4", "Check an Android app (.apk)", true),
             (
                 "5",
+                "Check an Android app's source code (Gradle project)",
+                true,
+            ),
+            ("6", "Check an iOS app's source code (Xcode project)", true),
+            (
+                "7",
                 "Fix what was found (plan → preview → apply → verify)",
                 true,
             ),
             (
-                "6",
+                "8",
                 "Scan this whole computer for exposed credentials",
                 false,
             ),
-            ("7", "License status / where to buy", false),
+            ("9", "License status / where to buy", false),
             (
-                "8",
+                "10",
                 "Connect jetscan to your AI editor (Claude Code, Cursor, VS Code…)",
                 false,
             ),
@@ -219,7 +227,10 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             } else {
                 String::new()
             };
-            self.say(&format!("  {}  {text}{tail}", ui::cyan(key)));
+            self.say(&format!(
+                "  {}  {text}{tail}",
+                ui::cyan(&format!("{key:>2}"))
+            ));
         }
     }
 
@@ -413,6 +424,28 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
         Ok(())
     }
 
+    fn android(&mut self) -> Step<()> {
+        let folder = self.folder(
+            "Which Android project folder (the one with settings.gradle or build.gradle)? \
+             Nothing is built or run.",
+        )?;
+        let mut args = vec!["android".to_string()];
+        args.extend(folder);
+        self.run(args);
+        Ok(())
+    }
+
+    fn ios(&mut self) -> Step<()> {
+        let folder = self.folder(
+            "Which iOS project folder (the one with the .xcodeproj, Package.swift or Info.plist)? \
+             Nothing is built or run.",
+        )?;
+        let mut args = vec!["ios".to_string()];
+        args.extend(folder);
+        self.run(args);
+        Ok(())
+    }
+
     fn machine(&mut self) -> Step<()> {
         self.say("");
         self.say(
@@ -505,8 +538,8 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
              editor or reload its MCP servers.",
         );
         self.say(&ui::dim(
-            "Free through the AI: secrets, packages, GitHub Actions, fix plans. The website and \
-             APK audits need a jetscan license key there.",
+            "Free through the AI: secrets, packages, GitHub Actions, fix plans. The website, APK, \
+             Android and iOS source audits need a jetscan license key there.",
         ));
         self.say(&ui::dim(&format!("Other editors and details: {MCP_GUIDE}")));
         if let Some(claude) = self.host.claude() {
@@ -839,7 +872,7 @@ mod tests {
     fn ai_editor_setup_prints_commands_and_configs() {
         let t = Temp::new("ai");
         let mut host = Fake::new(EXE, None);
-        let (code, text, ran) = drive_on("8\n\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (code, text, ran) = drive_on("10\n\n0\n", &t.0, &mut |_| 0, &mut host);
         assert_eq!(code, 0);
         assert!(ran.is_empty(), "no jetscan command runs: {ran:?}");
         assert!(host.spawned.is_empty());
@@ -877,13 +910,13 @@ mod tests {
         for answer in ["", "y", "Yes", "yes please", "no"] {
             let mut host = Fake::new(EXE, Some(claude));
             let (_, text, _) =
-                drive_on(&format!("8\n{answer}\n\n0\n"), &t.0, &mut |_| 0, &mut host);
+                drive_on(&format!("10\n{answer}\n\n0\n"), &t.0, &mut |_| 0, &mut host);
             assert!(text.contains("to run it now"), "{text}");
             assert!(text.contains("Skipped. Nothing was changed."), "{answer:?}");
             assert!(host.spawned.is_empty(), "{answer:?}");
         }
         let mut host = Fake::new(EXE, Some(claude));
-        let (code, text, ran) = drive_on("8\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (code, text, ran) = drive_on("10\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
         assert_eq!(code, 0);
         assert!(ran.is_empty());
         let user = strings(&["mcp", "add", "--scope", "user", "jetscan", "--", EXE, "mcp"]);
@@ -892,10 +925,10 @@ mod tests {
 
         let mut host = Fake::new(EXE, Some(claude));
         host.exit = Some(1);
-        let (_, text, _) = drive_on("8\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (_, text, _) = drive_on("10\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
         assert!(text.contains("exit code 1"), "{text}");
         host.exit = None;
-        let (_, text, _) = drive_on("8\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (_, text, _) = drive_on("10\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
         assert!(text.contains("could not be started"), "{text}");
     }
 
@@ -904,7 +937,7 @@ mod tests {
         let t = Temp::new("ai-nopath");
         let mut host = Fake::new(EXE, Some("claude"));
         host.exe = None;
-        let (code, text, _) = drive_on("8\nyes\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (code, text, _) = drive_on("10\nyes\n0\n", &t.0, &mut |_| 0, &mut host);
         assert_eq!(code, 0);
         assert!(text.contains("Could not tell where"), "{text}");
         assert!(text.contains("docs/mcp/README.md"), "{text}");
@@ -928,7 +961,7 @@ mod tests {
     #[test]
     fn end_of_input_quits_cleanly() {
         let t = Temp::new("eof");
-        for script in ["", "2\n", "2\n\n", "5\n", "x\n"] {
+        for script in ["", "2\n", "2\n\n", "5\n", "6\n", "x\n"] {
             let (code, text, ran) = drive(script, &t.0, &mut |_| 0);
             assert_eq!(code, 0, "{script:?}");
             assert!(text.contains("Bye."), "{script:?}: {text}");
@@ -944,7 +977,7 @@ mod tests {
     #[test]
     fn bom_prefixed_input_is_understood() {
         let t = Temp::new("bom");
-        let (_, text, ran) = drive("\u{feff}7\n\n0\n", &t.0, &mut |_| 0);
+        let (_, text, ran) = drive("\u{feff}9\n\n0\n", &t.0, &mut |_| 0);
         assert!(!text.contains("is not on the list"), "{text}");
         assert_eq!(ran, vec![vec!["license".to_string()]]);
     }
@@ -956,12 +989,13 @@ mod tests {
         let missing = t.0.join("missing").display().to_string();
         let file = t.0.join("file.txt").display().to_string();
         let script = format!(
-            "9\nhello\n2\n{missing}\n{file}\n\"{}\"\n\n0\n",
+            "11\nhello\n2\n{missing}\n{file}\n\"{}\"\n\n0\n",
             t.0.display()
         );
         let (code, text, ran) = drive(&script, &t.0, &mut |_| 0);
         assert_eq!(code, 0);
-        assert!(text.contains("'9' is not on the list"));
+        assert!(text.contains("'11' is not on the list"));
+        assert!(text.contains("Type a number from 0 to 10."));
         assert!(text.contains("'hello' is not on the list"));
         assert!(text.contains("No such folder"));
         assert!(text.contains("That is a file, not a folder"));
@@ -988,9 +1022,13 @@ mod tests {
             (format!("2\n{repo}\ny\n"), strings(&["secrets", &repo])),
             ("3\n\n".into(), strings(&["web", "source"])),
             (format!("4\n\n{apk}\n"), strings(&["apk", &apk])),
-            ("6\n\n".into(), strings(&["machine"])),
-            ("6\nyes\n".into(), strings(&["machine", "--deps"])),
-            ("7\n".into(), strings(&["license"])),
+            ("5\n\n".into(), strings(&["android"])),
+            (format!("5\n{repo}\n"), strings(&["android", &repo])),
+            ("6\n\n".into(), strings(&["ios"])),
+            (format!("6\n{repo}\n"), strings(&["ios", &repo])),
+            ("8\n\n".into(), strings(&["machine"])),
+            ("8\nyes\n".into(), strings(&["machine", "--deps"])),
+            ("9\n".into(), strings(&["license"])),
         ];
         for (script, want) in cases {
             let (code, text, ran) = drive(&format!("{script}\n0\n"), &t.0, &mut |_| 0);
@@ -1003,7 +1041,9 @@ mod tests {
     #[test]
     fn zero_goes_back_without_running_anything() {
         let t = Temp::new("back");
-        for script in ["2\n0\n", "4\n0\n", "6\n0\n", "1\n\n0\n", "5\n0\n"] {
+        for script in [
+            "2\n0\n", "4\n0\n", "5\n0\n", "6\n0\n", "8\n0\n", "1\n\n0\n", "7\n0\n",
+        ] {
             let (code, text, ran) = drive(&format!("{script}0\n"), &t.0, &mut |_| 0);
             assert_eq!(code, 0);
             assert!(ran.is_empty(), "{script:?}");
@@ -1014,7 +1054,7 @@ mod tests {
     #[test]
     fn yes_no_asks_again_on_other_answers() {
         let t = Temp::new("yn");
-        let (_, text, ran) = drive("6\nmaybe\nN\n\n0\n", &t.0, &mut |_| 0);
+        let (_, text, ran) = drive("8\nmaybe\nN\n\n0\n", &t.0, &mut |_| 0);
         assert!(text.contains("Please answer y or n"));
         assert_eq!(ran, vec![strings(&["machine"])]);
     }
@@ -1022,7 +1062,7 @@ mod tests {
     #[test]
     fn resolve_stops_when_the_plan_fails() {
         let t = Temp::new("resolve-fail");
-        let (_, text, ran) = drive("5\n\n\n0\n", &t.0, &mut |_| 2);
+        let (_, text, ran) = drive("7\n\n\n0\n", &t.0, &mut |_| 2);
         assert_eq!(ran.len(), 1, "{ran:?}");
         assert_eq!(&ran[0][..3], &strings(&["resolve", "plan", "."])[..]);
         assert_eq!(ran[0][3], "--out");
@@ -1034,7 +1074,7 @@ mod tests {
     fn resolve_without_a_plan_file_never_asks_to_apply() {
         // The plan "succeeds" but wrote nothing readable: treated as nothing to apply.
         let t = Temp::new("resolve-empty");
-        let (_, text, ran) = drive("5\n\nyes\n\n0\n", &t.0, &mut |_| 0);
+        let (_, text, ran) = drive("7\n\nyes\n\n0\n", &t.0, &mut |_| 0);
         assert_eq!(ran.len(), 2, "plan and preview only: {ran:?}");
         assert!(text.contains("advice only"));
         assert!(!text.contains("Apply these changes?"));
