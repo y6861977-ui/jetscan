@@ -2,10 +2,9 @@
 use super::testutil::{Project, patch_plan, workflow_scan};
 use super::*;
 use crate::finding_v2::{CheckStatus, RedactionPolicy, RemediationState};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+#[cfg(windows)]
+use std::path::PathBuf;
+use std::{fs, path::Path};
 
 const TITLE: (&str, &str) = ("workflows/pr-title.yml", ".github/workflows/pr-title.yml");
 const TRIAGE: (&str, &str) = (
