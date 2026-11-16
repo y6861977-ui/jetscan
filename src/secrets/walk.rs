@@ -109,27 +109,49 @@ fn walk_dir(
 
     for entry in children {
         let path = entry.path();
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
+        // Тип записи — из листинга каталога, без отдельного вызова на файл (T9.3, P3):
+        // на Windows `symlink_metadata` открывает дескриптор на каждый файл (~19 мкс).
+        // Как и `symlink_metadata`, `DirEntry::file_type` ссылки не разыменовывает:
+        // симлинк и junction (reparse point «name surrogate») — `is_symlink()`.
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
             Err(_) => {
                 stats.skipped_unreadable += 1;
                 continue;
             }
         };
 
-        if metadata.file_type().is_symlink() {
+        if file_type.is_symlink() {
             continue;
         }
-        if metadata.is_dir() {
+        if file_type.is_dir() {
             if should_skip_dir(&entry.file_name().to_string_lossy()) {
                 stats.dirs_skipped += 1;
             } else {
                 walk_dir(&path, opts, visit, stats);
             }
-        } else if metadata.is_file() {
-            walk_file(&path, metadata.len(), opts, visit, stats);
+        } else if file_type.is_file() {
+            let Some(len) = entry_len(&entry, &path, opts) else {
+                stats.skipped_unreadable += 1;
+                continue;
+            };
+            walk_file(&path, len, opts, visit, stats);
         }
     }
+}
+
+/// Размер файла. На Windows `DirEntry::metadata` берёт его из листинга каталога даром, но
+/// там он может отставать у файла, в который сейчас пишут. Поэтому «слишком большой»
+/// перепроверяем тем же `symlink_metadata`, что и раньше; слишком маленький безопасен —
+/// `walk_file` читает не больше `max_file_bytes + 1` и проверяет длину прочитанного.
+fn entry_len(entry: &fs::DirEntry, path: &Path, opts: &WalkOptions) -> Option<u64> {
+    let len = entry.metadata().ok()?.len();
+    if len <= opts.max_file_bytes {
+        return Some(len);
+    }
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| metadata.len())
 }
 
 fn should_skip_dir(name: &str) -> bool {
@@ -157,7 +179,8 @@ fn walk_file(
             return;
         }
     };
-    let mut bytes = Vec::new();
+    // Ёмкость по размеру из каталога: без перевыделений по ходу чтения.
+    let mut bytes = Vec::with_capacity((metadata_len as usize).saturating_add(1));
     if file
         .take(opts.max_file_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
@@ -371,6 +394,129 @@ mod tests {
 
         assert_eq!(paths, vec![PathBuf::from("kept.txt")]);
         assert_eq!(stats.files_scanned, 1);
+    }
+
+    /// Windows junction (`mklink /J` needs no privileges, unlike symlinks).
+    #[cfg(windows)]
+    fn junction(link: &Path, target: &Path) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[test]
+    fn does_not_follow_file_symlinks() {
+        let temp = TempDir::new();
+        write(&temp.path().join("real.txt"), b"real");
+        let link = temp.path().join("link.txt");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(temp.path().join("real.txt"), &link).is_ok();
+        #[cfg(windows)]
+        let linked =
+            std::os::windows::fs::symlink_file(temp.path().join("real.txt"), &link).is_ok();
+        if !linked {
+            eprintln!("skipping file symlink assertion: OS denied symlink creation");
+            return;
+        }
+        let (paths, stats) = relative_paths(temp.path(), &WalkOptions::default());
+        assert_eq!(paths, vec![PathBuf::from("real.txt")]);
+        assert_eq!(stats.files_scanned, 1);
+        assert_eq!(stats.skipped_unreadable, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn does_not_follow_junctions_but_scans_a_junction_root() {
+        let temp = TempDir::new();
+        write(&temp.path().join("real").join("a.txt"), b"a");
+        // Junction inside the tree: to a sibling, and back to its own parent (a loop).
+        let to_sibling = temp.path().join("j-sibling");
+        let to_parent = temp.path().join("real").join("j-loop");
+        assert!(
+            junction(&to_sibling, &temp.path().join("real")),
+            "mklink /J"
+        );
+        assert!(junction(&to_parent, temp.path()), "mklink /J");
+
+        let (paths, stats) = relative_paths(temp.path(), &WalkOptions::default());
+        assert_eq!(paths, vec![PathBuf::from("real").join("a.txt")]);
+        assert_eq!(stats.files_scanned, 1);
+        assert_eq!(stats.skipped_unreadable, 0);
+
+        // A junction given as the root is followed, like a symlinked root.
+        let stats = walk(&to_sibling, &WalkOptions::default(), &mut |_, _| {});
+        assert_eq!(stats.files_scanned, 1);
+    }
+
+    #[test]
+    fn entry_classification_matches_symlink_metadata() {
+        // P3: the walk reads the entry type and size from the directory listing. They must
+        // say exactly what `fs::symlink_metadata` (the previous per-entry call) says.
+        let temp = TempDir::new();
+        write(&temp.path().join("file.txt"), b"12345");
+        write(&temp.path().join("dir").join("inner.txt"), b"x");
+        write(&temp.path().join("empty.txt"), b"");
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink(temp.path().join("dir"), temp.path().join("ld"));
+            let _ =
+                std::os::unix::fs::symlink(temp.path().join("file.txt"), temp.path().join("lf"));
+            let _ = std::os::unix::fs::symlink(temp.path().join("gone"), temp.path().join("lx"));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::{symlink_dir, symlink_file};
+            let _ = symlink_dir(temp.path().join("dir"), temp.path().join("ld"));
+            let _ = symlink_file(temp.path().join("file.txt"), temp.path().join("lf"));
+            let _ = symlink_file(temp.path().join("gone"), temp.path().join("lx"));
+            assert!(junction(&temp.path().join("jd"), &temp.path().join("dir")));
+        }
+        let mut seen = 0;
+        for entry in fs::read_dir(temp.path()).unwrap() {
+            let entry = entry.unwrap();
+            let from_listing = entry.file_type().unwrap();
+            let from_call = fs::symlink_metadata(entry.path()).unwrap();
+            let name = entry.file_name();
+            assert_eq!(
+                (
+                    from_listing.is_symlink(),
+                    from_listing.is_dir(),
+                    from_listing.is_file()
+                ),
+                (
+                    from_call.file_type().is_symlink(),
+                    from_call.is_dir(),
+                    from_call.is_file()
+                ),
+                "{name:?}"
+            );
+            if from_listing.is_file() {
+                let opts = WalkOptions::default();
+                assert_eq!(
+                    entry_len(&entry, &entry.path(), &opts),
+                    Some(from_call.len()),
+                    "{name:?}"
+                );
+            }
+            seen += 1;
+        }
+        assert!(seen >= 3);
+    }
+
+    #[test]
+    fn large_file_size_is_confirmed_before_skipping() {
+        let temp = TempDir::new();
+        write(&temp.path().join("big.txt"), &[b'a'; 40]);
+        let entry = fs::read_dir(temp.path()).unwrap().next().unwrap().unwrap();
+        let opts = WalkOptions { max_file_bytes: 16 };
+        assert_eq!(entry_len(&entry, &entry.path(), &opts), Some(40));
+        let (_, stats) = relative_paths(temp.path(), &opts);
+        assert_eq!(stats.skipped_large, 1);
     }
 }
 

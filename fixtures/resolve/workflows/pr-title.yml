@@ -1,0 +1,17 @@
+name: PR title check
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+permissions:
+  contents: read
+jobs:
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title format
+        run: |
+          title="${{ github.event.pull_request.title }}"
+          if [[ ! "$title" =~ ^(feat|fix|docs|chore) ]]; then
+            echo "The title must start with feat, fix, docs or chore"
+            exit 1
+          fi

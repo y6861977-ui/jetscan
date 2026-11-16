@@ -9,3 +9,9 @@ protects the jetscan Teams features (--sarif, --sbom, --baseline).
 Parts that come from the author's earlier project jet were published under the
 MIT license and remain available under it as well: src/json.rs, src/ui.rs, the
 SHA-256 code in src/hash.rs, and the OSV client in src/deps/osv.rs.
+
+src/apk_audit/inflate.rs is an altered version of puff.c, a reference inflate
+(RFC 1951) decoder, ported from C to Rust for jetscan. The original is
+Copyright (C) 2002-2013 Mark Adler and is distributed under the zlib license;
+the original copyright notice and license text are kept verbatim in the header
+of src/apk_audit/inflate.rs. This port is not the original software.

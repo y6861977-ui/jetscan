@@ -1,0 +1,23 @@
+# NEGATIVE: server-only variable, not inlined into the bundle
+STRIPE_SECRET_KEY=@@STRIPE_SECRET@@
+# POSITIVE line 4: privileged key format in a public variable (critical / potential)
+NEXT_PUBLIC_STRIPE_SECRET_KEY=@@STRIPE_SECRET@@
+# POSITIVE line 6: the name says secret (high / needs_review)
+NEXT_PUBLIC_ADMIN_PASSWORD="@@DB_PASSWORD@@"
+# NEGATIVE: public by design
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=@@STRIPE_PUBLISHABLE@@
+NEXT_PUBLIC_FIREBASE_API_KEY=@@FIREBASE_API_KEY@@
+NEXT_PUBLIC_SUPABASE_ANON_KEY=@@SUPABASE_ANON_JWT@@
+NEXT_PUBLIC_SUPABASE_URL=https://jetscanfixture.supabase.co
+NEXT_PUBLIC_POSTHOG_KEY=phc_jetscanfixture
+# NEGATIVE: placeholders and empty values
+NEXT_PUBLIC_WEBHOOK_SECRET=your_webhook_secret_here
+NEXT_PUBLIC_API_SECRET=
+# NEGATIVE: Next.js does not expose VITE_ variables
+VITE_CLIENT_SECRET=@@DB_PASSWORD@@
+# NEGATIVE: suppressed on purpose
+NEXT_PUBLIC_LEGACY_SECRET=@@DB_PASSWORD@@ # jetscan:ignore
+# NEGATIVE (WEB-SUPABASE-005): server-only variable
+SUPABASE_SERVICE_ROLE_KEY=@@SUPABASE_SERVICE_JWT@@
+# POSITIVE line 23 (WEB-SUPABASE-005): service-role JWT in a public variable
+NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY=@@SUPABASE_SERVICE_JWT@@

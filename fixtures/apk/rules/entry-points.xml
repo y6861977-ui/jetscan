@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Field test 2026-11-12, pattern 12: most exported components in real apps are documented public
+     entry points (deep links, share targets, media sessions, sync adapters, boot receivers).
+     Those become info/needs_review; explicit exports with no intent-filter stay medium. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.jetscan.fixture.entry">
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
+    <application android:label="Entry points" android:allowBackup="false">
+        <!-- INFO: deep link -->
+        <activity android:name=".LinkActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="example.test" />
+            </intent-filter>
+        </activity>
+        <!-- INFO: share target -->
+        <activity android:name=".ShareActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+            </intent-filter>
+        </activity>
+        <!-- INFO: media session service -->
+        <service android:name=".PlayerService" android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+        <!-- INFO: protected system broadcast -->
+        <receiver android:name=".BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+        <!-- MEDIUM: explicit export, no intent-filter (like a tooling/debug activity left in a release) -->
+        <activity android:name=".PreviewActivity" android:exported="true" />
+        <!-- MEDIUM: mixed filter — a documented action plus a custom one -->
+        <service android:name=".MixedService" android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+                <action android:name="com.jetscan.fixture.CONTROL" />
+            </intent-filter>
+        </service>
+        <!-- LOW: custom action receiver (unchanged) -->
+        <receiver android:name=".CustomReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="com.jetscan.fixture.PING" />
+            </intent-filter>
+        </receiver>
+        <!-- Round 2: an activity-alias without its own intent-filter inherits its target's status. -->
+        <!-- INFO: alias of a deep-link activity (like Fennec's BrowserApp alias) -->
+        <activity-alias android:name=".LegacyLinkAlias" android:targetActivity=".LinkActivity" android:exported="true" />
+        <!-- INFO: alias of the share activity, target named by its full class name -->
+        <activity-alias android:name="com.jetscan.fixture.entry.ShareAlias" android:targetActivity="com.jetscan.fixture.entry.ShareActivity" android:exported="true" />
+        <!-- MEDIUM: alias of an activity that is not a public entry point -->
+        <activity-alias android:name=".PreviewAlias" android:targetActivity=".PreviewActivity" android:exported="true" />
+        <!-- MEDIUM: alias whose target does not exist in the manifest -->
+        <activity-alias android:name=".OrphanAlias" android:targetActivity=".MissingActivity" android:exported="true" />
+        <!-- MEDIUM: provider exported without permission (strongest real signal, unchanged) -->
+        <provider android:name=".SettingsProvider" android:authorities="com.jetscan.fixture.settings" android:exported="true" />
+    </application>
+</manifest>

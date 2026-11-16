@@ -1,0 +1,38 @@
+rules_version = '2';
+// jetscan fixture for WEB-FIREBASE-010 (docs/rules/web/WEB-FIREBASE-010.md). Not real rules.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // POSITIVE high/potential: test mode, open to everyone until the date.
+    match /{document=**} {
+      allow read, write: if request.time < timestamp.date(2025, 6, 1);
+    }
+
+    // NEGATIVE: owner-only.
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // POSITIVE low/needs_review: public content, probably intended.
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.author == request.auth.uid;
+    }
+
+    // POSITIVE high/potential: anyone can write.
+    match /orders/{orderId} {
+      allow write;
+    }
+
+    // NEGATIVE: only signed-in on one collection (not the whole database) stays quiet.
+    match /comments/{id} {
+      allow create: if isSignedIn();
+    }
+
+    // NEGATIVE: commented out rules are not rules.
+    // match /{x=**} { allow read, write: if true; }
+  }
+
+  function isSignedIn() {
+    return request.auth != null;
+  }
+}

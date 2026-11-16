@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- APK-EXPORT-001 / APK-PERMS-005, targetSdk 30. Expected findings are listed in src/apk_audit/tests.rs. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.jetscan.fixture.exports">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="30" />
+    <permission android:name="com.jetscan.fixture.SIGNED" android:protectionLevel="signature" />
+    <permission android:name="com.jetscan.fixture.WEAK" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <application android:label="Exports" android:allowBackup="false">
+        <!-- NEGATIVE: launcher entry point is exported by design -->
+        <activity android:name=".Main" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- POSITIVE: explicit export, no permission (medium / potential) -->
+        <service android:name=".OpenService" android:exported="true" />
+        <!-- NEGATIVE: signature-level permission declared here -->
+        <service android:name=".SignedService" android:exported="true" android:permission="com.jetscan.fixture.SIGNED" />
+        <!-- POSITIVE: guarded by a normal-level permission any app can get (low) -->
+        <service android:name=".WeakService" android:exported="true" android:permission="com.jetscan.fixture.WEAK" />
+        <!-- NEGATIVE: platform permission (defined by the system, not in this manifest) -->
+        <service android:name=".Job" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
+        <!-- NEGATIVE: disabled -->
+        <service android:name=".Disabled" android:exported="true" android:enabled="false" />
+        <!-- POSITIVE: exported by default because of the intent-filter (low / needs_review) -->
+        <receiver android:name=".PushReceiver">
+            <intent-filter>
+                <action android:name="com.jetscan.fixture.PUSH" />
+            </intent-filter>
+        </receiver>
+        <!-- NEGATIVE: no intent-filter, not exported by default -->
+        <receiver android:name=".InternalReceiver" />
+        <!-- POSITIVE: read is guarded, write is not (medium / potential) -->
+        <provider android:name=".Notes" android:authorities="com.jetscan.fixture.notes" android:exported="true" android:readPermission="com.jetscan.fixture.SIGNED" />
+        <!-- NEGATIVE: targetSdk >= 17, providers are not exported by default -->
+        <provider android:name=".Cache" android:authorities="com.jetscan.fixture.cache" />
+    </application>
+</manifest>

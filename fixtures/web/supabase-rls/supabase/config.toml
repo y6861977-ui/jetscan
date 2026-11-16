@@ -1,0 +1,6 @@
+project_id = "jetscan-fixture"
+
+[api]
+enabled = true
+# Schemas exposed through the Data API.
+schemas = ["public", "graphql_public"]

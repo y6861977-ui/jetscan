@@ -1,0 +1,1 @@
+{ "name": "jetscan-fixture-pem-utils", "private": true, "dependencies": { "next": "15.0.3", "react": "19.0.0" } }

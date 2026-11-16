@@ -3,7 +3,7 @@
 
 use super::history::{self, HistoryError, HistoryStats};
 use super::walk::{self, DEFAULT_SKIP_DIRS, WalkOptions, WalkStats};
-use super::{Finding, Hit, Location, gitstatus, rules, scan_line, special, verify};
+use super::{Finding, Hit, Location, gitstatus, rules, special, verify};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -330,7 +330,7 @@ impl GitLineScanner {
         if path_in_skipped_dir(hl.path) || hl.text.contains(INLINE_IGNORE) {
             return;
         }
-        let mut hits = scan_line(rules::all(), hl.line, hl.text);
+        let mut hits = rules::scan_line(hl.line, hl.text);
         // Спецфайлы построчные (.env, .npmrc, .pypirc, .git-credentials) работают и по строке.
         let as_path = Path::new(hl.path);
         if special::is_special(as_path) {
@@ -445,7 +445,7 @@ fn scan_text_with_ignores(text: &str) -> Vec<Hit> {
     text.lines()
         .enumerate()
         .filter(|(_, line)| !line.contains(INLINE_IGNORE))
-        .flat_map(|(i, line)| scan_line(rules::all(), i + 1, line))
+        .flat_map(|(i, line)| rules::scan_line(i + 1, line))
         .collect()
 }
 

@@ -1,5 +1,12 @@
 //! Спецфайлы с кредами: `.env*`, `.npmrc`, `.pypirc`, `.git-credentials`,
-//! `.docker/config.json`.
+//! `.docker/config.json`, `.dockercfg`, хранилища паролей (T9.1), профили шелла
+//! (`.bashrc`, `.zshrc`, `.envrc`, …), `~/.aws/credentials`, `.s3cfg`, Rails `secrets.yml`,
+//! конфиги `hub`/`gh` (T9.4).
+//!
+//! Два режима фильтрации. Файл-хранилище (единственное назначение — хранить учётные данные:
+//! `.netrc`, `.aws/credentials`, `hub`, …) — любое непустое буквальное значение = находка.
+//! Файл настроек, где секреты лишь бывают (`.env`, профиль шелла, `secrets.yml`), — фильтры
+//! имён ключей и заглушек, как у `.env`.
 //!
 //! Движок прогоняет общие правила (`rules::all`) по ВСЕМ файлам, включая эти,
 //! и потом дедупит по (место, строка, отпечаток). Поэтому здесь не нужно
@@ -40,6 +47,53 @@ const STORE_PASSWORD_RULE: RuleInfo = RuleInfo {
     name: "Password in credential store",
     confidence: Confidence::High,
 };
+const SHELL_RULE: RuleInfo = RuleInfo {
+    id: "shell-secret",
+    name: "Secret in shell profile",
+    confidence: Confidence::Medium,
+};
+// Same id and name as the line rule in `rules.rs`: one secret, one kind of finding.
+const AWS_SECRET_RULE: RuleInfo = RuleInfo {
+    id: "aws-secret-key",
+    name: "AWS Secret Access Key",
+    confidence: Confidence::High,
+};
+const AWS_SESSION_RULE: RuleInfo = RuleInfo {
+    id: "aws-session-token",
+    name: "AWS Session Token",
+    confidence: Confidence::High,
+};
+const RAILS_RULE: RuleInfo = RuleInfo {
+    id: "rails-secret",
+    name: "Secret in Rails secrets.yml",
+    confidence: Confidence::High,
+};
+const HUB_RULE: RuleInfo = RuleInfo {
+    id: "github-cli-oauth-token",
+    name: "GitHub OAuth token in hub/gh config",
+    confidence: Confidence::High,
+};
+
+/// Shell startup files (and direnv's `.envrc`): `export KEY=value` lives here. Dotfile
+/// repositories keep them without the dot (`bashrc`), and `~/.zshrc.local` is the usual
+/// place for "private" settings.
+fn is_shell_profile(lower: &str) -> bool {
+    let name = lower.strip_suffix(".local").unwrap_or(lower);
+    let name = name.strip_prefix('.').unwrap_or(name);
+    matches!(
+        name,
+        "bashrc"
+            | "bash_profile"
+            | "bash_login"
+            | "bash_aliases"
+            | "zshrc"
+            | "zshenv"
+            | "zprofile"
+            | "zlogin"
+            | "kshrc"
+            | "mkshrc"
+    ) || matches!(lower, ".profile" | ".envrc")
+}
 
 fn parent_is(path: &Path, name: &str) -> bool {
     path.parent()
@@ -75,13 +129,20 @@ pub fn is_special(path: &Path) -> bool {
             | ".ftpconfig"
             | ".remote-sync.json"
             | "deployment-config.json"
+            | ".dockercfg"
+            | ".s3cfg"
+            | "secrets.yml"
+            | "hub"
     ) {
         return true;
     }
-    (lower == "config.json" && parent_is(path, ".docker"))
+    is_shell_profile(&lower)
+        || (lower == "config.json" && parent_is(path, ".docker"))
         || (lower == "sftp.json" && parent_is(path, ".vscode"))
         || (lower == "webservers.xml" && parent_is(path, ".idea"))
         || (lower.ends_with(".xml") && parent_is(path, "filezilla"))
+        || (matches!(lower.as_str(), "credentials" | "config") && parent_is(path, ".aws"))
+        || (lower == "hosts.yml" && parent_is(path, "gh"))
 }
 
 /// Находки в спецфайле. `text` — содержимое целиком. `line`/`col` — как в `Hit`.
@@ -121,6 +182,32 @@ pub fn scan(path: &Path, text: &str) -> Vec<Hit> {
         scan_pgpass(text)
     } else if name == ".esmtprc" {
         scan_esmtprc(text)
+    } else if is_shell_profile(&name) {
+        scan_shell(text)
+    } else if name == ".dockercfg" {
+        scan_dockercfg(text)
+    } else if name == ".s3cfg" {
+        scan_ini_store(
+            text,
+            &[
+                ("secret_key", AWS_SECRET_RULE),
+                ("access_token", AWS_SESSION_RULE),
+                ("gpg_passphrase", STORE_PASSWORD_RULE),
+            ],
+        )
+    } else if parent_is(path, ".aws") {
+        scan_ini_store(
+            text,
+            &[
+                ("aws_secret_access_key", AWS_SECRET_RULE),
+                ("aws_session_token", AWS_SESSION_RULE),
+                ("aws_security_token", AWS_SESSION_RULE),
+            ],
+        )
+    } else if name == "secrets.yml" {
+        scan_rails_secrets(text)
+    } else if name == "hub" || name == "hosts.yml" {
+        scan_hub_config(text)
     } else if name.ends_with(".xml") {
         scan_password_xml(text)
     } else if name != "config.json" {
@@ -273,15 +360,271 @@ fn stored_password(value: &str) -> bool {
 }
 
 fn store_hit(hits: &mut Vec<Hit>, text: &str, start: usize, secret: String) {
+    store_hit_as(hits, STORE_PASSWORD_RULE, text, start, secret);
+}
+
+fn store_hit_as(hits: &mut Vec<Hit>, rule: RuleInfo, text: &str, start: usize, secret: String) {
     if stored_password(&secret) {
         let (line, col) = line_and_column(text, start);
         hits.push(Hit {
-            rule: STORE_PASSWORD_RULE,
+            rule,
             line,
             col,
             secret,
         });
     }
+}
+
+/// `export KEY=value` / `KEY=value` in a shell profile. Not a credential store — the
+/// file is mostly settings — so the `.env` key and placeholder filters apply. Only literal
+/// values count: anything the shell would expand (`$VAR`, `$(cmd)`, backticks) is not the
+/// secret itself.
+fn scan_shell(text: &str) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let Some((key, start, end)) = shell_assignment(line) else {
+            continue;
+        };
+        let value = &line[start..end];
+        if !env_key_is_sensitive(key)
+            || env_value_is_not_secret(value, false)
+            || shell_value_is_not_secret(key, value)
+        {
+            continue;
+        }
+        push_hit(&mut hits, SHELL_RULE, line_index + 1, line, start, end);
+    }
+    hits
+}
+
+/// `[export ]NAME=value` at the start of a line → (NAME, byte range of the literal value).
+/// `None` for anything the shell would expand or that we cannot read on one line.
+fn shell_assignment(line: &str) -> Option<(&str, usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut at = line.len() - line.trim_start().len();
+    if bytes.get(at) == Some(&b'#') {
+        return None;
+    }
+    if line[at..].starts_with("export")
+        && bytes
+            .get(at + "export".len())
+            .is_some_and(|b| *b == b' ' || *b == b'\t')
+    {
+        at += "export".len();
+        while bytes.get(at).is_some_and(|b| *b == b' ' || *b == b'\t') {
+            at += 1;
+        }
+    }
+    let key_start = at;
+    if !bytes
+        .get(at)
+        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+    {
+        return None;
+    }
+    while bytes
+        .get(at)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    {
+        at += 1;
+    }
+    let key = &line[key_start..at];
+    // No spaces around `=` in shell; `[ "$x" = y ]` and `X == y` are not assignments.
+    if bytes.get(at) != Some(&b'=') || bytes.get(at + 1) == Some(&b'=') {
+        return None;
+    }
+    let start = at + 1;
+    let (start, end) = match bytes.get(start) {
+        Some(b'\'') => {
+            let close = line[start + 1..].find('\'')? + start + 1;
+            (start + 1, close)
+        }
+        Some(b'"') => {
+            let close = line[start + 1..].find('"')? + start + 1;
+            if line[start + 1..close].contains(['$', '`', '\\']) {
+                return None;
+            }
+            (start + 1, close)
+        }
+        _ => {
+            let end = line[start..]
+                .find(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | ')' | '<' | '>'))
+                .map_or(line.len(), |n| start + n);
+            if line[start..end].contains(['$', '`', '\\', '\'', '"', '(']) {
+                return None;
+            }
+            (start, end)
+        }
+    };
+    (start < end).then_some((key, start, end))
+}
+
+/// What `.env` filters do not cover but shell profiles are full of: paths (`KEY_FILE=~/.ssh/k`,
+/// `PASSWORD_STORE_DIR=…`) and GPG key ids (`GPG_KEY=0x…` — public identifiers, not secrets).
+fn shell_value_is_not_secret(key: &str, value: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    let words: Vec<&str> = upper.split('_').filter(|w| !w.is_empty()).collect();
+    let last = words.last().copied().unwrap_or("");
+    let hex = value.strip_prefix("0x").unwrap_or(value);
+    value.starts_with(['/', '~'])
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || matches!(
+            last,
+            "DIR" | "PATH" | "FILE" | "HOME" | "SOCK" | "SOCKET" | "CMD" | "COMMAND" | "PROGRAM"
+        )
+        || (words
+            .iter()
+            .any(|w| matches!(*w, "GPG" | "PGP" | "GNUPG" | "GPGKEY"))
+            && !hex.is_empty()
+            && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// INI-style credential files (`~/.aws/credentials`, `~/.s3cfg`): `key = value` under
+/// `[sections]`. Credential stores — any non-empty literal value of a listed key is a
+/// finding, however weak (same rule as T9.1). Trailing ` # comment` is dropped.
+fn scan_ini_store(text: &str, keys: &[(&str, RuleInfo)]) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    let mut offset = 0;
+    for raw in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += raw.len();
+        let line = raw.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with(['#', ';', '[']) {
+            continue;
+        }
+        let Some(equals) = line.find('=') else {
+            continue;
+        };
+        let key = line[..equals].trim();
+        let Some(rule) = keys
+            .iter()
+            .find(|(name, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, rule)| *rule)
+        else {
+            continue;
+        };
+        let mut end = [" #", "\t#", " ;", "\t;"]
+            .iter()
+            .filter_map(|marker| line[equals + 1..].find(marker))
+            .min()
+            .map_or(line.len(), |n| equals + 1 + n);
+        let (mut start, trimmed_end) = trim_ascii_bounds(line, equals + 1, end);
+        end = trimmed_end;
+        let bytes = line.as_bytes();
+        if end - start >= 2
+            && matches!(bytes[start], b'\'' | b'"')
+            && bytes[end - 1] == bytes[start]
+        {
+            start += 1;
+            end -= 1;
+        }
+        store_hit_as(
+            &mut hits,
+            rule,
+            text,
+            line_start + start,
+            line[start..end].to_string(),
+        );
+    }
+    hits
+}
+
+/// One line of YAML `key: value` → (key, byte range of the scalar value). Plain and
+/// quoted scalars only; block scalars, anchors, aliases, flow collections and tags are
+/// skipped (`None`), as is a key with no value (the start of a nested mapping).
+fn yaml_scalar(line: &str) -> Option<(&str, usize, usize)> {
+    let mut at = line.len() - line.trim_start().len();
+    if line[at..].starts_with("- ") {
+        at += 2;
+        at += line[at..].len() - line[at..].trim_start().len();
+    }
+    let rest = &line[at..];
+    if rest.starts_with('#') {
+        return None;
+    }
+    let colon = rest.find(':')?;
+    let key = rest[..colon].trim_matches(['\'', '"']);
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
+        return None;
+    }
+    let after = at + colon + 1;
+    if line
+        .as_bytes()
+        .get(after)
+        .is_some_and(|b| !b.is_ascii_whitespace())
+    {
+        return None;
+    }
+    let (start, end) = trim_ascii_bounds(line, after, line.len());
+    let bytes = line.as_bytes();
+    match bytes.get(start)? {
+        q @ (b'\'' | b'"') => {
+            let close = line[start + 1..].find(char::from(*q))? + start + 1;
+            Some((key, start + 1, close))
+        }
+        b'|' | b'>' | b'&' | b'*' | b'!' | b'{' | b'[' | b'#' => None,
+        _ => {
+            let end = line[start..end]
+                .find(" #")
+                .map_or(end, |n| trim_ascii_bounds(line, start, start + n).1);
+            Some((key, start, end))
+        }
+    }
+}
+
+/// Rails `config/secrets.yml`: `secret_key_base` and any other secret-named key with a
+/// literal value. ERB (`<%= ENV["SECRET_KEY_BASE"] %>`) is a reference, not a secret.
+/// Rails' generator writes literal development/test keys here — they are reported too:
+/// they sign cookies of whatever runs with that environment.
+fn scan_rails_secrets(text: &str) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        let Some((key, start, end)) = yaml_scalar(line) else {
+            continue;
+        };
+        let value = &line[start..end];
+        if start == end
+            || value.contains("<%")
+            || matches!(value, "~" | "null" | "Null" | "NULL")
+            || !env_key_is_sensitive(key)
+            || env_value_is_not_secret(value, false)
+        {
+            continue;
+        }
+        push_hit(&mut hits, RAILS_RULE, line_index + 1, line, start, end);
+    }
+    hits
+}
+
+/// `~/.config/hub` and `~/.config/gh/hosts.yml`: `oauth_token: …` is a GitHub token,
+/// whatever its format (hub stored 40-hex tokens that no prefix rule can see).
+/// A credential store: any literal value is a finding.
+fn scan_hub_config(text: &str) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    let mut offset = 0;
+    for raw in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += raw.len();
+        let line = raw.trim_end_matches(['\r', '\n']);
+        if let Some((key, start, end)) = yaml_scalar(line)
+            && key == "oauth_token"
+        {
+            store_hit_as(
+                &mut hits,
+                HUB_RULE,
+                text,
+                line_start + start,
+                line[start..end].to_string(),
+            );
+        }
+    }
+    hits
 }
 
 struct StoreWord {
@@ -693,9 +1036,49 @@ fn scan_docker_config(text: &str) -> Vec<Hit> {
     }
 
     let tokens = json_string_tokens(text);
-    let Some((auths_start, auths_end)) = root_auths_object(text, &tokens) else {
+    let Some(span) = root_auths_object(text, &tokens) else {
         return Vec::new();
     };
+    docker_auth_hits(text, &tokens, span, expected)
+}
+
+/// Legacy `~/.dockercfg` (before `config.json`): the root object IS the `auths` map —
+/// `{"https://index.docker.io/v1/": {"auth": "…", "email": "…"}}`.
+fn scan_dockercfg(text: &str) -> Vec<Hit> {
+    let Ok(root) = json::parse(text) else {
+        return Vec::new();
+    };
+    let Some(registries) = root.as_object() else {
+        return Vec::new();
+    };
+    let mut expected = HashMap::<String, usize>::new();
+    for entry in registries.values() {
+        if let Some(auth) = entry.get("auth").and_then(Json::as_str)
+            && !ignored_value(auth)
+        {
+            *expected.entry(auth.to_string()).or_default() += 1;
+        }
+    }
+    if expected.is_empty() {
+        return Vec::new();
+    }
+    let Some(open) = text.find('{') else {
+        return Vec::new();
+    };
+    let Some(close) = matching_object_end(text, open) else {
+        return Vec::new();
+    };
+    let tokens = json_string_tokens(text);
+    docker_auth_hits(text, &tokens, (open, close), expected)
+}
+
+/// `"auth": "…"` pairs inside `span` whose value the parser saw as a registry's auth.
+fn docker_auth_hits(
+    text: &str,
+    tokens: &[JsonStringToken],
+    (auths_start, auths_end): (usize, usize),
+    mut expected: HashMap<String, usize>,
+) -> Vec<Hit> {
     let mut hits = Vec::new();
     for pair in tokens.windows(2) {
         let key = &pair[0];
@@ -1372,5 +1755,271 @@ TOKEN=1Д
                 "root"
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod t94_tests {
+    //! T9.4: shell profiles, AWS/S3 credential files, Rails secrets.yml, hub/gh, .dockercfg.
+    //! Secret-looking values are assembled at runtime so this file holds none.
+    use super::*;
+
+    /// Random-looking value of the given shape, never a real key.
+    fn fake(parts: &[&str]) -> String {
+        parts.concat()
+    }
+
+    fn secrets(path: &str, text: &str) -> Vec<String> {
+        scan(Path::new(path), text)
+            .into_iter()
+            .map(|h| h.secret)
+            .collect()
+    }
+
+    fn found(hits: &[Hit]) -> Vec<(&str, usize, usize, &str)> {
+        hits.iter()
+            .map(|h| (h.rule.id, h.line, h.col, h.secret.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn new_special_paths_are_narrowly_scoped() {
+        for path in [
+            ".bashrc",
+            "home/.bash_profile",
+            "dotfiles/bashrc",
+            ".zshrc",
+            ".zshrc.local",
+            ".zshenv",
+            ".profile",
+            ".envrc",
+            ".dockercfg",
+            ".s3cfg",
+            ".aws/credentials",
+            ".aws/config",
+            "config/secrets.yml",
+            "web/ruby/secrets.yml",
+            "hub",
+            ".config/hub",
+            ".config/gh/hosts.yml",
+        ] {
+            assert!(is_special(Path::new(path)), "{path}");
+        }
+        let token = fake(&["Qz7Kp2Lm", "9Xw4Rt6Y"]);
+        for path in [
+            "profile",
+            "bashrc.sh",
+            "install.bash",
+            "config",
+            "credentials",
+            "cloud/config",
+            "hosts.yml",
+            "secrets.yaml",
+            "secrets.yml.example",
+            "hub.yml",
+            "dockercfg",
+        ] {
+            assert!(!is_special(Path::new(path)), "{path}");
+            for text in [
+                format!("export API_TOKEN={token}"),
+                format!("aws_secret_access_key = {token}"),
+                format!("oauth_token: {token}"),
+                format!("secret_key_base: {token}"),
+            ] {
+                assert!(scan(Path::new(path), &text).is_empty(), "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn shell_profiles_report_literal_exported_secrets() {
+        let aws = fake(&["nQ2Vz", "KrMrRjyS", "Llt8HCdFU3tM"]);
+        let gh = fake(&["51e61afe", "e2c2667123fc", "9ed160a0"]);
+        let weak = fake(&["Pass!", "12345"]);
+        let plain = fake(&["k9", "Lm2Qz"]);
+        let text = format!(
+            "# ~/.bashrc\r\nHISTSIZE=1000\r\nexport AWS_SECRET_ACCESS_KEY={aws}\r\n\
+             export HOMEBREW_GITHUB_API_TOKEN='{gh}' # comment\r\n\
+             if [ -n \"$PS1\" ]; then\r\n  export GMAIL_PASSWORD=\"{weak}\"\r\nfi\r\n\
+             DB_PASS={plain}; export DB_PASS\r\n"
+        );
+        let hits = scan(Path::new(".bashrc"), &text);
+        assert_eq!(
+            found(&hits),
+            vec![
+                ("shell-secret", 3, 30, aws.as_str()),
+                ("shell-secret", 4, 35, gh.as_str()),
+                ("shell-secret", 6, 26, weak.as_str()),
+                ("shell-secret", 8, 9, plain.as_str()),
+            ]
+        );
+        assert!(hits.iter().all(|h| h.rule.confidence == Confidence::Medium));
+        // One line at a time (as history lines arrive): same result.
+        assert_eq!(
+            secrets(".zshrc", &format!("export API_KEY={plain}")),
+            vec![plain]
+        );
+    }
+
+    #[test]
+    fn shell_profiles_skip_references_paths_placeholders_and_non_assignments() {
+        let value = fake(&["Qz7Kp2Lm", "9Xw4Rt6Y"]);
+        let text = format!(
+            "# export API_TOKEN={value}\n\
+             export API_TOKEN=\n\
+             export S3_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY\n\
+             export GITHUB_TOKEN=${{GH_TOKEN}}\n\
+             export NPM_TOKEN=\"$(cat ~/.npm-token)\"\n\
+             export OPENAI_API_KEY=`pass show openai`\n\
+             export SLACK_TOKEN=\"abc$SUFFIX\"\n\
+             export SECRET_KEY=$(openssl rand -hex 32)\n\
+             export PASSWORD_STORE_DIR=~/.password-store\n\
+             export SSH_KEY=/home/me/.ssh/id_ed25519\n\
+             export DEPLOY_KEY_FILE=keys/deploy\n\
+             export GPG_KEY=0x1A2B3C4D5E6F7A8B\n\
+             export GPGKEY=1A2B3C4D\n\
+             export TOKEN_TTL=3600\n\
+             export API_KEY=your_api_key_here\n\
+             export NEXT_PUBLIC_API_KEY={value}\n\
+             export DEBUG=true\n\
+             [ \"$TOKEN\" = {value} ] && echo same\n\
+             TOKEN=={value}\n\
+             export -n API_TOKEN\n\
+             export API_TOKEN='{value}\n\
+             alias token='echo {value}'\n"
+        );
+        assert_eq!(secrets(".bash_profile", &text), Vec::<String>::new());
+        // A setting that merely contains a secret word is not a secret name.
+        assert!(secrets(".profile", &format!("export KEYTIMEOUT={value}")).is_empty());
+    }
+
+    #[test]
+    fn aws_credentials_file_reports_any_stored_secret() {
+        let secret = fake(&["nQ2Vz", "KrMrRjyS", "Llt8HCdFU3tM"]);
+        let session = fake(&["IQoJb3", "JpZ2luX2VjE", "Pz9Kq"]);
+        let weak = ["change", "me"].concat();
+        let text = format!(
+            "# AWS\r\n[default]\r\naws_access_key_id = {}\r\naws_secret_access_key = {secret} # note\r\n\
+             aws_session_token={session}\r\n[profile two]\r\nAWS_SECRET_ACCESS_KEY = {weak}\r\n",
+            fake(&["yLryKGwc", "Gc3ez9G8"])
+        );
+        let hits = scan(Path::new(".aws/credentials"), &text);
+        assert_eq!(
+            found(&hits),
+            vec![
+                ("aws-secret-key", 4, 25, secret.as_str()),
+                ("aws-session-token", 5, 19, session.as_str()),
+                ("aws-secret-key", 7, 25, weak.as_str()),
+            ]
+        );
+        assert!(hits.iter().all(|h| h.rule.confidence == Confidence::High));
+    }
+
+    #[test]
+    fn aws_credentials_file_skips_empty_references_and_comments() {
+        let value = fake(&["nQ2Vz", "KrMrRjyS", "Llt8HCdFU3tM"]);
+        let text = format!(
+            "[default]\naws_secret_access_key =\naws_secret_access_key = ${{AWS_SECRET}}\n\
+             aws_session_token = $SESSION\n# aws_secret_access_key = {value}\n\
+             ; aws_secret_access_key = {value}\n[aws_secret_access_key = {value}]\n\
+             aws_access_key_id = {value}\nregion = us-east-1\n"
+        );
+        assert!(secrets(".aws/config", &text).is_empty());
+    }
+
+    #[test]
+    fn s3cfg_reports_secret_key_not_access_key() {
+        let secret = fake(&["yLryKGwc", "Gc3ez9G8YAnj"]);
+        let text = format!(
+            "[default]\naccess_key = {}\nsecret_key = {secret} # Sensitive\ngpg_passphrase =\n\
+             access_token = \nhost_base = s3.amazonaws.com\n",
+            fake(&["nQ2Vz", "KrMrRjyS"])
+        );
+        let hits = scan(Path::new(".s3cfg"), &text);
+        assert_eq!(
+            found(&hits),
+            vec![("aws-secret-key", 3, 14, secret.as_str())]
+        );
+    }
+
+    #[test]
+    fn rails_secrets_yml_reports_literal_secrets() {
+        let dev = fake(&["e0ec946f", "cefea5ce0d4d", "924f3c8db11d"]);
+        let quoted = fake(&["96dc2e34", "9b1236b9e591"]);
+        let other = fake(&["Qz7Kp2Lm", "9Xw4Rt6Y"]);
+        let text = format!(
+            "# comment\r\ndevelopment:\r\n  secret_key_base: {dev}\r\n\r\ntest:\r\n  secret_key_base: \"{quoted}\"\r\n\
+             production:\r\n  secret_key_base: <%= ENV[\"SECRET_KEY_BASE\"] %>\r\n  stripe_secret_key: {other} # live\r\n"
+        );
+        let hits = scan(Path::new("config/secrets.yml"), &text);
+        assert_eq!(
+            found(&hits),
+            vec![
+                ("rails-secret", 3, 20, dev.as_str()),
+                ("rails-secret", 6, 21, quoted.as_str()),
+                ("rails-secret", 9, 22, other.as_str()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rails_secrets_yml_skips_erb_references_and_placeholders() {
+        let value = fake(&["Qz7Kp2Lm", "9Xw4Rt6Y"]);
+        let text = format!(
+            "production:\n  secret_key_base: \"<%= ENV.fetch('SECRET_KEY_BASE') %>\"\n\
+             secret_key_base:\n  secret_key_base: ~\n  secret_key_base: null\n\
+             # secret_key_base: {value}\n  secret_key_base: your_secret_here\n\
+             secret_key_base: |\n  {value}\n  api_token: ${{API_TOKEN}}\n\
+             stripe_publishable_key: {value}\n  domain_name: example.test\n\
+             secret_key_base: *default_secret\n  timeout_secret: 30\n"
+        );
+        assert_eq!(secrets("config/secrets.yml", &text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn hub_and_gh_configs_report_any_oauth_token() {
+        let token = fake(&["7f9cc25d", "e23d1a255720", "b0ae4551f404"]);
+        let weak = ["sec", "ret"].concat();
+        let hub = format!(
+            "---\r\ngithub.com:\r\n- user: octocat\r\n  oauth_token: \"{token}\"\r\n  protocol: https\r\n\
+             enterprise.test:\r\n- oauth_token: {weak}\r\n"
+        );
+        let hits = scan(Path::new("hub"), &hub);
+        assert_eq!(
+            found(&hits),
+            vec![
+                ("github-cli-oauth-token", 4, 17, token.as_str()),
+                ("github-cli-oauth-token", 7, 16, weak.as_str()),
+            ]
+        );
+        let gh = format!("github.com:\n    user: octocat\n    oauth_token: {token}\n");
+        assert_eq!(secrets(".config/gh/hosts.yml", &gh), vec![token.clone()]);
+        let empty = format!(
+            "github.com:\n  oauth_token:\n  oauth_token: \"\"\n  oauth_token: ${{GH_TOKEN}}\n\
+             # oauth_token: {token}\n  user: octocat\n  git_protocol: https\n"
+        );
+        assert!(secrets(".config/hub", &empty).is_empty());
+    }
+
+    #[test]
+    fn legacy_dockercfg_reports_registry_auths() {
+        let auth = fake(&["X3Rva2Vu", "OjEyMzQuMThq", "Zjg0MWZr"]);
+        let other = fake(&["dXNlcjpw", "YXNzd29yZA"]);
+        let text = format!(
+            "{{\r\n  \"https://index.docker.io/v1/\": {{\r\n    \"email\": \"d@example.test\",\r\n    \"auth\": \"{auth}\"\r\n  }},\r\n\
+             \"registry.test\": {{\"auth\": \"{other}\"}},\r\n  \"empty.test\": {{\"auth\": \"\"}},\r\n\
+             \"nested.test\": {{\"meta\": {{\"auth\": \"{other}x\"}}}}\r\n}}"
+        );
+        let hits = scan(Path::new("home/.dockercfg"), &text);
+        assert_eq!(
+            found(&hits),
+            vec![
+                ("docker-auth", 4, 14, auth.as_str()),
+                ("docker-auth", 6, 28, other.as_str()),
+            ]
+        );
+        assert!(scan(Path::new(".dockercfg"), "{not json").is_empty());
+        assert!(scan(Path::new(".dockercfg"), "[\"auth\", \"x\"]").is_empty());
+        assert!(scan(Path::new(".dockercfg"), "{\"r\": {\"auth\": \"${AUTH}\"}}").is_empty());
     }
 }

@@ -1,230 +1,241 @@
 //! Правила для ключей провайдеров.
 //! Без regex: ручные матчеры «префикс + алфавит + длина + границы слова».
 
-use super::{Confidence, Rule, RuleInfo, Span};
+use super::{Confidence, Hit, Rule, RuleInfo, Span};
+use std::sync::OnceLock;
 
-static RULES: [Rule; 27] = [
-    Rule {
-        info: RuleInfo {
-            id: "aws-access-key",
-            name: "AWS Access Key ID",
-            confidence: Confidence::High,
-        },
-        find: find_aws_access_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "aws-secret-key",
-            name: "AWS Secret Access Key",
-            confidence: Confidence::High,
-        },
-        find: find_aws_secret_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "github-token",
-            name: "GitHub Token",
-            confidence: Confidence::High,
-        },
-        find: find_github_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "gitlab-token",
-            name: "GitLab Token",
-            confidence: Confidence::High,
-        },
-        find: find_gitlab_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "slack-token",
-            name: "Slack Token",
-            confidence: Confidence::High,
-        },
-        find: find_slack_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "slack-webhook",
-            name: "Slack Incoming Webhook",
-            confidence: Confidence::High,
-        },
-        find: find_slack_webhook,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "stripe-live",
-            name: "Stripe Live Key",
-            confidence: Confidence::High,
-        },
-        find: find_stripe_live,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "google-api",
-            name: "Google API Key",
-            confidence: Confidence::High,
-        },
-        find: find_google_api,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "openai",
-            name: "OpenAI API Key",
-            confidence: Confidence::High,
-        },
-        find: find_openai,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "anthropic",
-            name: "Anthropic API Key",
-            confidence: Confidence::High,
-        },
-        find: find_anthropic,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "huggingface-token",
-            name: "Hugging Face Access Token",
-            confidence: Confidence::High,
-        },
-        find: find_huggingface_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "groq-api-key",
-            name: "Groq API Key",
-            confidence: Confidence::High,
-        },
-        find: find_groq_api_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "replicate-token",
-            name: "Replicate API Token",
-            confidence: Confidence::Medium,
-        },
-        find: find_replicate_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "perplexity-api-key",
-            name: "Perplexity API Key",
-            confidence: Confidence::High,
-        },
-        find: find_perplexity_api_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "xai-api-key",
-            name: "xAI API Key",
-            confidence: Confidence::High,
-        },
-        find: find_xai_api_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "resend-api-key",
-            name: "Resend API Key",
-            confidence: Confidence::High,
-        },
-        find: find_resend_api_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "sendgrid-api-key",
-            name: "SendGrid API Key",
-            confidence: Confidence::High,
-        },
-        find: find_sendgrid_api_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "twilio-api-key",
-            name: "Twilio API Key SID",
-            confidence: Confidence::Medium,
-        },
-        find: find_twilio_api_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "mailgun-api-key",
-            name: "Mailgun API Key",
-            confidence: Confidence::High,
-        },
-        find: find_mailgun_api_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "discord-bot-token",
-            name: "Discord Bot Token",
-            confidence: Confidence::High,
-        },
-        find: find_discord_bot_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "shopify-access-token",
-            name: "Shopify Access Token",
-            confidence: Confidence::High,
-        },
-        find: find_shopify_access_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "npm-token",
-            name: "npm Token",
-            confidence: Confidence::High,
-        },
-        find: find_npm_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "pypi-token",
-            name: "PyPI Token",
-            confidence: Confidence::High,
-        },
-        find: find_pypi_token,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "telegram-bot",
-            name: "Telegram Bot Token",
-            confidence: Confidence::High,
-        },
-        find: find_telegram_bot,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "private-key",
-            name: "Private Key",
-            confidence: Confidence::High,
-        },
-        find: find_private_key,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "url-credentials",
-            name: "Password in URL",
-            confidence: Confidence::Medium,
-        },
-        find: find_url_credentials,
-    },
-    Rule {
-        info: RuleInfo {
-            id: "digitalocean-token",
-            name: "DigitalOcean Token",
-            confidence: Confidence::High,
-        },
-        find: find_digitalocean_token,
-    },
-];
+/// Без каких литералов правило не может сработать на строке (T9.3, P1).
+///
+/// Префильтр один раз проходит по строке и запускает только правила, чей литерал в ней
+/// есть. Инвариант: если матчер вернул участок, то строка содержит хотя бы один литерал
+/// из `literals` и не короче `min_len`. Не уверен — `ALWAYS` (правило работает на каждой
+/// строке): префильтр открывается, а не молча пропускает.
+#[derive(Clone, Copy, Debug)]
+pub struct Triggers {
+    /// Хотя бы один должен быть в строке. Пусто — правило запускается всегда.
+    pub literals: &'static [&'static str],
+    /// Сравнивать литералы без учёта регистра ASCII.
+    pub ignore_case: bool,
+    /// Самая короткая находка правила, в байтах: строка короче — правило не нужно.
+    pub min_len: usize,
+}
+
+impl Triggers {
+    /// Нет литерала — правило работает на каждой строке.
+    pub const ALWAYS: Triggers = Triggers {
+        literals: &[],
+        ignore_case: false,
+        min_len: 0,
+    };
+
+    const fn any(literals: &'static [&'static str]) -> Triggers {
+        Triggers {
+            literals,
+            ignore_case: false,
+            min_len: 0,
+        }
+    }
+}
+
+/// Таблица правил: у каждого правила рядом — его литералы-триггеры. Макрос раскладывает
+/// её в `RULES` (контракт `Rule` из `mod.rs` не меняется) и `TRIGGERS` в том же порядке.
+macro_rules! rules {
+    ($({ $id:literal, $name:literal, $confidence:ident, $find:ident, $triggers:expr $(,)? }),* $(,)?) => {
+        const RULE_COUNT: usize = [$($id),*].len();
+        static RULES: [Rule; RULE_COUNT] = [$(
+            Rule {
+                info: RuleInfo {
+                    id: $id,
+                    name: $name,
+                    confidence: Confidence::$confidence,
+                },
+                find: $find,
+            }
+        ),*];
+        static TRIGGERS: [Triggers; RULE_COUNT] = [$($triggers),*];
+    };
+}
+
+rules! {
+    { "aws-access-key", "AWS Access Key ID", High, find_aws_access_key,
+        Triggers::any(&["AKIA", "ASIA"]) },
+    { "aws-secret-key", "AWS Secret Access Key", High, find_aws_secret_key,
+        Triggers { literals: &["aws_secret_access_key"], ignore_case: true, min_len: 0 } },
+    { "github-token", "GitHub Token", High, find_github_token,
+        Triggers::any(&["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"]) },
+    { "gitlab-token", "GitLab Token", High, find_gitlab_token, Triggers::any(&["glpat-"]) },
+    { "slack-token", "Slack Token", High, find_slack_token,
+        Triggers::any(&["xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-", "xapp-"]) },
+    { "slack-webhook", "Slack Incoming Webhook", High, find_slack_webhook,
+        Triggers::any(&["https://hooks.slack.com/services/"]) },
+    { "stripe-live", "Stripe Live Key", High, find_stripe_live,
+        Triggers::any(&["sk_live_", "rk_live_"]) },
+    { "google-api", "Google API Key", High, find_google_api, Triggers::any(&["AIza"]) },
+    // `sk-proj-`, `sk-svcacct-`, `sk-admin-` и `sk-` + 48 — все содержат `sk-`.
+    { "openai", "OpenAI API Key", High, find_openai, Triggers::any(&["sk-"]) },
+    { "anthropic", "Anthropic API Key", High, find_anthropic, Triggers::any(&["sk-ant-"]) },
+    { "huggingface-token", "Hugging Face Access Token", High, find_huggingface_token,
+        Triggers::any(&["hf_"]) },
+    { "groq-api-key", "Groq API Key", High, find_groq_api_key, Triggers::any(&["gsk_"]) },
+    { "replicate-token", "Replicate API Token", Medium, find_replicate_token,
+        Triggers::any(&["r8_"]) },
+    { "perplexity-api-key", "Perplexity API Key", High, find_perplexity_api_key,
+        Triggers::any(&["pplx-"]) },
+    { "xai-api-key", "xAI API Key", High, find_xai_api_key, Triggers::any(&["xai-"]) },
+    { "resend-api-key", "Resend API Key", High, find_resend_api_key, Triggers::any(&["re_"]) },
+    { "sendgrid-api-key", "SendGrid API Key", High, find_sendgrid_api_key,
+        Triggers::any(&["SG."]) },
+    { "twilio-api-key", "Twilio API Key SID", Medium, find_twilio_api_key,
+        Triggers::any(&["SK"]) },
+    { "mailgun-api-key", "Mailgun API Key", High, find_mailgun_api_key,
+        Triggers::any(&["key-"]) },
+    // Литерала нет; обязательна точка между частями. Кратчайший токен:
+    // 23 (id) + `.` + 6 + `.` + 27 = 58 байт.
+    { "discord-bot-token", "Discord Bot Token", High, find_discord_bot_token,
+        Triggers { literals: &["."], ignore_case: false, min_len: 58 } },
+    { "shopify-access-token", "Shopify Access Token", High, find_shopify_access_token,
+        Triggers::any(&["shpat_", "shpca_", "shppa_", "shpss_"]) },
+    { "npm-token", "npm Token", High, find_npm_token, Triggers::any(&["npm_"]) },
+    { "pypi-token", "PyPI Token", High, find_pypi_token,
+        Triggers::any(&["pypi-AgEIcHlwaS5vcmc"]) },
+    // Литерала нет; обязательно `:`. Кратчайший токен: 8 цифр + `:` + 35 = 44 байта.
+    { "telegram-bot", "Telegram Bot Token", High, find_telegram_bot,
+        Triggers { literals: &[":"], ignore_case: false, min_len: 44 } },
+    { "private-key", "Private Key", High, find_private_key, Triggers::any(&["-----BEGIN "]) },
+    { "url-credentials", "Password in URL", Medium, find_url_credentials,
+        Triggers::any(&["://"]) },
+    { "digitalocean-token", "DigitalOcean Token", High, find_digitalocean_token,
+        Triggers::any(&["dop_v1_", "doo_v1_", "dor_v1_"]) },
+}
+
+// Маска кандидатов — u128: правил не больше 128 (иначе — не компилируется).
+const _: () = assert!(RULE_COUNT <= 128);
 
 /// Все правила. Порядок стабилен (влияет на порядок находок в отчёте).
 pub fn all() -> &'static [Rule] {
     &RULES
+}
+
+/// Триггеры правил, в том же порядке, что `all()`.
+pub fn triggers() -> &'static [Triggers] {
+    &TRIGGERS
+}
+
+/// Для каждого первого байта — литералы, которые с него начинаются: (литерал, № правила,
+/// без учёта регистра). Строится один раз из `TRIGGERS`.
+struct TriggerTable {
+    by_first: Vec<Vec<(&'static [u8], usize, bool)>>,
+    /// Правила без литералов — работают на каждой строке.
+    always: u128,
+    /// (минимальная длина строки, бит правила) — только для правил с `min_len > 0`.
+    min_len: Vec<(usize, u128)>,
+}
+
+impl TriggerTable {
+    fn new(triggers: &[Triggers]) -> TriggerTable {
+        assert!(triggers.len() <= 128, "candidate mask holds 128 rules");
+        let mut table = TriggerTable {
+            by_first: vec![Vec::new(); 256],
+            always: 0,
+            min_len: Vec::new(),
+        };
+        for (index, rule) in triggers.iter().enumerate() {
+            let bit = 1u128 << index;
+            if rule.min_len > 0 {
+                table.min_len.push((rule.min_len, bit));
+            }
+            // Нет литералов или есть пустой (он совпадает с любой строкой) — всегда.
+            if rule.literals.is_empty() || rule.literals.iter().any(|l| l.is_empty()) {
+                table.always |= bit;
+                continue;
+            }
+            for literal in rule.literals.iter().map(|l| l.as_bytes()) {
+                let first = literal[0];
+                if rule.ignore_case {
+                    let (lower, upper) = (first.to_ascii_lowercase(), first.to_ascii_uppercase());
+                    table.by_first[lower as usize].push((literal, index, true));
+                    if upper != lower {
+                        table.by_first[upper as usize].push((literal, index, true));
+                    }
+                } else {
+                    table.by_first[first as usize].push((literal, index, false));
+                }
+            }
+        }
+        table
+    }
+
+    fn candidates(&self, line: &str) -> u128 {
+        let bytes = line.as_bytes();
+        let mut mask = self.always;
+        for (at, &byte) in bytes.iter().enumerate() {
+            for &(literal, index, ignore_case) in &self.by_first[byte as usize] {
+                if let Some(window) = bytes.get(at..at + literal.len())
+                    && (if ignore_case {
+                        window.eq_ignore_ascii_case(literal)
+                    } else {
+                        window == literal
+                    })
+                {
+                    mask |= 1 << index;
+                }
+            }
+        }
+        // Слишком короткая строка не вместит находку правила.
+        for &(min_len, bit) in &self.min_len {
+            if bytes.len() < min_len {
+                mask &= !bit;
+            }
+        }
+        mask
+    }
+}
+
+fn trigger_table() -> &'static TriggerTable {
+    static TABLE: OnceLock<TriggerTable> = OnceLock::new();
+    TABLE.get_or_init(|| TriggerTable::new(&TRIGGERS))
+}
+
+/// Какие правила стоит запускать на строке: бит `i` — правило `all()[i]`.
+/// Один проход по байтам строки.
+pub fn candidates(line: &str) -> u128 {
+    trigger_table().candidates(line)
+}
+
+/// Тесты: префильтр на этой строке ничего не теряет — каждое сработавшее правило отмечено
+/// в маске, и итог совпадает с прогоном всех правил. Зовётся из хелперов всех тестов правил,
+/// так что каждый их пример заодно проверяет префильтр.
+#[cfg(test)]
+fn assert_prefilter_agrees(line: &str) {
+    let mask = candidates(line);
+    for (index, rule) in RULES.iter().enumerate() {
+        assert!(
+            (rule.find)(line).is_empty() || mask & (1 << index) != 0,
+            "prefilter would skip {} on {line:?}",
+            rule.info.id
+        );
+    }
+    assert_eq!(
+        scan_line(7, line),
+        super::scan_line(&RULES, 7, line),
+        "{line:?}"
+    );
+}
+
+/// То же, что `secrets::scan_line(all(), line_no, line)` — те же находки в том же порядке, —
+/// но запускает только правила, чьи литералы есть в строке.
+pub fn scan_line(line_no: usize, line: &str) -> Vec<Hit> {
+    let mask = candidates(line);
+    if mask == 0 {
+        return Vec::new();
+    }
+    let mut hits = Vec::new();
+    for (index, rule) in RULES.iter().enumerate() {
+        if mask & (1 << index) != 0 {
+            hits.extend(super::scan_line(std::slice::from_ref(rule), line_no, line));
+        }
+    }
+    hits
 }
 
 /// Известная заглушка/пример, а не настоящий секрет
@@ -341,7 +352,75 @@ fn find_aws_access_key(line: &str) -> Vec<Span> {
 }
 
 fn find_aws_secret_key(line: &str) -> Vec<Span> {
-    find_labeled_value(line, "aws_secret_access_key", 40, is_base64_character)
+    // One pass over the label. A 40-character run is exactly what
+    // `find_labeled_value(…, 40, …)` accepted before (a longer run fails its boundary
+    // check, a shorter one its character check).
+    // S3-compatible services (DigitalOcean Spaces, MinIO, Wasabi, …) reuse the AWS variable
+    // names with secrets of other lengths. Off the 40-character format the value must look
+    // random (lower + upper + digit) and carry no placeholder words.
+    let mut spans = find_labeled_run(line, "aws_secret_access_key", is_base64_character);
+    spans.retain(|span| {
+        let value = &line[span.start..span.end];
+        if value.len() == 40 {
+            return !is_placeholder(value);
+        }
+        let lower = value.to_ascii_lowercase();
+        (20..=64).contains(&value.len())
+            && has_lower_upper_digit(value)
+            && ![
+                "your", "example", "sample", "secret", "access", "dummy", "fake", "test",
+                "replace", "insert", "change",
+            ]
+            .iter()
+            .any(|word| lower.contains(word))
+            && !is_placeholder(value)
+    });
+    sorted(spans)
+}
+
+/// `label` (case-insensitive) `=`/`:` value, where the value is the whole run of `allowed`
+/// bytes (any length), terminated by its quote or a token boundary.
+fn find_labeled_run(line: &str, label: &str, allowed: fn(u8) -> bool) -> Vec<Span> {
+    let bytes = line.as_bytes();
+    let mut spans = Vec::new();
+    for label_start in ascii_case_insensitive_positions(line, label) {
+        if !left_boundary(line, label_start) {
+            continue;
+        }
+        let mut cursor = label_start + label.len();
+        if bytes
+            .get(cursor)
+            .is_some_and(|byte| is_token_character(*byte as char))
+        {
+            continue;
+        }
+        if matches!(bytes.get(cursor), Some(b'\'' | b'"')) {
+            cursor += 1;
+        }
+        skip_ascii_whitespace(bytes, &mut cursor);
+        if !matches!(bytes.get(cursor), Some(b'=' | b':')) {
+            continue;
+        }
+        cursor += 1;
+        skip_ascii_whitespace(bytes, &mut cursor);
+        let quote = match bytes.get(cursor) {
+            Some(b'\'' | b'"') => {
+                cursor += 1;
+                Some(bytes[cursor - 1])
+            }
+            _ => None,
+        };
+        let start = cursor;
+        let end = ascii_run_end(bytes, start, allowed);
+        let terminated = match quote {
+            Some(quote) => bytes.get(end) == Some(&quote),
+            None => right_boundary_for(line, end, allowed),
+        };
+        if end > start && terminated {
+            spans.push(Span { start, end });
+        }
+    }
+    spans
 }
 
 fn find_github_token(line: &str) -> Vec<Span> {
@@ -861,61 +940,6 @@ fn add_variable_prefixed(
     }
 }
 
-fn find_labeled_value(
-    line: &str,
-    label: &str,
-    value_len: usize,
-    allowed: fn(u8) -> bool,
-) -> Vec<Span> {
-    let bytes = line.as_bytes();
-    let mut spans = Vec::new();
-    for label_start in ascii_case_insensitive_positions(line, label) {
-        if !left_boundary(line, label_start) {
-            continue;
-        }
-        let mut cursor = label_start + label.len();
-        if bytes
-            .get(cursor)
-            .is_some_and(|byte| is_token_character(*byte as char))
-        {
-            continue;
-        }
-        if matches!(bytes.get(cursor), Some(b'\'' | b'"')) {
-            cursor += 1;
-        }
-        skip_ascii_whitespace(bytes, &mut cursor);
-        if !matches!(bytes.get(cursor), Some(b'=' | b':')) {
-            continue;
-        }
-        cursor += 1;
-        skip_ascii_whitespace(bytes, &mut cursor);
-        let quote = match bytes.get(cursor) {
-            Some(b'\'' | b'"') => {
-                let quote = bytes[cursor];
-                cursor += 1;
-                Some(quote)
-            }
-            _ => None,
-        };
-        let start = cursor;
-        let end = start + value_len;
-        let Some(value) = bytes.get(start..end) else {
-            continue;
-        };
-        if !value.iter().copied().all(allowed) {
-            continue;
-        }
-        let terminated = match quote {
-            Some(quote) => bytes.get(end) == Some(&quote),
-            None => right_boundary_for(line, end, allowed),
-        };
-        if terminated && !is_placeholder(&line[start..end]) {
-            spans.push(Span { start, end });
-        }
-    }
-    sorted(spans)
-}
-
 fn ascii_case_insensitive_positions(line: &str, needle: &str) -> Vec<usize> {
     let bytes = line.as_bytes();
     let needle = needle.as_bytes();
@@ -1071,6 +1095,7 @@ mod tests {
             .iter()
             .find(|rule| rule.info.id == rule_id)
             .expect("rule exists");
+        assert_prefilter_agrees(line);
         (rule.find)(line)
             .into_iter()
             .map(|span| line[span.start..span.end].to_string())
@@ -1162,6 +1187,58 @@ mod tests {
             "aws-secret-key",
             &format!("aws_secret_access_key={}", "x".repeat(40)),
         );
+    }
+
+    #[test]
+    fn aws_secret_key_off_format_lengths_for_s3_compatible_services() {
+        // 38 characters (as in leaky-repo), 43 (DigitalOcean Spaces), 20 (minimum).
+        for value in [
+            ["nAH2Vz", "KrMrRjySLlt8HCdFU3tM2TUuUZgh39NX"].concat(),
+            ["Qz7Kp2Lm9Xw4", "Rt6Yh3/Bn8Vc1+Df5Gs0Jk2Lp4Mn"].concat(),
+            ["k9Lm2Qz7Xw", "4Rt6Yh3Bn8"].concat(),
+        ] {
+            assert_detected(
+                "aws-secret-key",
+                &format!("export AWS_SECRET_ACCESS_KEY={value} # prod"),
+                &value,
+            );
+            assert_detected(
+                "aws-secret-key",
+                &format!("aws_secret_access_key = \"{value}\""),
+                &value,
+            );
+        }
+        for line in [
+            // too short / too long
+            format!(
+                "aws_secret_access_key={}",
+                ["k9Lm2Qz7Xw", "4Rt6Yh3Bn"].concat()
+            ),
+            format!("aws_secret_access_key={}", "Ab1".repeat(22)),
+            // no digit / no upper case: words, not random
+            format!("aws_secret_access_key={}", "getSecretAccessKeyFromVault"),
+            format!("aws_secret_access_key={}", "k9lm2qz7xw4rt6yh3bn8v"),
+            // placeholder words
+            format!("aws_secret_access_key={}", "YourSecretAccessKey123Here"),
+            format!("AWS_SECRET_ACCESS_KEY={}", "Example0Key0For0Docs0Only"),
+            format!("AWS_SECRET_ACCESS_KEY={}", "Minio123Test456Local789"),
+            // code and references
+            "client(aws_secret_access_key=aws_secret_key_2024, region=r)".to_string(),
+            "aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY']".to_string(),
+            "aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}".to_string(),
+            "aws_secret_access_key = var.Secret2Key3Value4Long".to_string(),
+            // unterminated quote / run glued to other text
+            format!(
+                "aws_secret_access_key=\"{}",
+                ["k9Lm2Qz7Xw", "4Rt6Yh3Bn8"].concat()
+            ),
+            format!(
+                "aws_secret_access_key={}-x",
+                ["k9Lm2Qz7Xw", "4Rt6Yh3Bn8"].concat()
+            ),
+        ] {
+            assert_not_detected("aws-secret-key", &line);
+        }
     }
 
     #[test]
@@ -1780,6 +1857,7 @@ mod review_tests {
 
     fn found(rule_id: &str, line: &str) -> Vec<String> {
         let rule = all().iter().find(|r| r.info.id == rule_id).unwrap();
+        assert_prefilter_agrees(line);
         (rule.find)(line)
             .into_iter()
             .map(|s| line[s.start..s.end].to_string())
@@ -1911,5 +1989,282 @@ mod review_tests_hosts {
                 "{host}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod prefilter_tests {
+    //! P1 (T9.3): the literal prefilter never changes what the rules find.
+    //! Values are the positive examples of the rule tests above, assembled at runtime.
+    use super::*;
+
+    /// At least one positive example per rule (from the rule tests).
+    fn positives() -> Vec<(&'static str, String)> {
+        let discord = format!(
+            "{}.{}.{}",
+            "MTIzNDU2Nzg5MDEyMzQ1Njc",
+            "A1_b-2",
+            "z9_".repeat(9)
+        );
+        let webhook = format!(
+            "{}{}/{}/{}",
+            "https://hooks.slack.com/services/",
+            format_args!("{}{}", "T", "19AZ".repeat(2)),
+            format_args!("{}{}", "B", "28BY".repeat(2)),
+            "Ab9_".repeat(6)
+        );
+        vec![
+            (
+                "aws-access-key",
+                format!("key={}{}", "AKIA", "A1".repeat(8)),
+            ),
+            ("aws-access-key", format!("'{}{}'", "ASIA", "Z9".repeat(8))),
+            (
+                "aws-secret-key",
+                format!("aws_secret_access_key = '{}'", "Ab1/".repeat(10)),
+            ),
+            (
+                "aws-secret-key",
+                format!("\"AWS_SECRET_ACCESS_KEY\": \"{}\"", "Z+9=".repeat(10)),
+            ),
+            (
+                "aws-secret-key",
+                format!(
+                    "export Aws_Secret_Access_Key={}",
+                    ["nAH2Vz", "KrMrRjySLlt8HCdFU3tM2TUuUZgh39NX"].concat()
+                ),
+            ),
+            ("github-token", format!("{}{}", "ghp_", "A1".repeat(18))),
+            (
+                "github-token",
+                format!("{}{}", "github_pat_", "Ab_".repeat(27) + "Z"),
+            ),
+            (
+                "gitlab-token",
+                format!("token: {}{}", "glpat-", "z9".repeat(10)),
+            ),
+            ("slack-token", format!("{}{}", "xoxb-", "1".repeat(20))),
+            (
+                "slack-token",
+                format!("app={}1-{}-{}", "xapp-", "A7".repeat(8), "b9".repeat(8)),
+            ),
+            ("slack-webhook", format!("hook=\"{webhook}\"")),
+            ("stripe-live", format!("{}{}", "sk_live_", "A1".repeat(12))),
+            (
+                "stripe-live",
+                format!("stripe={}{}", "rk_live_", "z9".repeat(16)),
+            ),
+            ("google-api", format!("{}{}", "AIza", "A1_2-".repeat(7))),
+            ("openai", format!("{}{}", "sk-", "A1".repeat(24))),
+            (
+                "openai",
+                format!("openai={}{}", "sk-proj-", "Ab_9-".repeat(4)),
+            ),
+            ("anthropic", format!("{}{}", "sk-ant-", "A1".repeat(10))),
+            (
+                "huggingface-token",
+                format!("{}{}", "hf_", "AbCdEfGhQr".repeat(3) + "StUv"),
+            ),
+            (
+                "groq-api-key",
+                format!("{}{}", "gsk_", "Ab3".repeat(17) + "Z"),
+            ),
+            (
+                "replicate-token",
+                format!("{}{}", "r8_", "Ab3".repeat(12) + "Z"),
+            ),
+            (
+                "perplexity-api-key",
+                format!("{}{}", "pplx-", "Ab3".repeat(16)),
+            ),
+            ("xai-api-key", format!("{}{}", "xai-", "Ab3_".repeat(20))),
+            (
+                "resend-api-key",
+                format!("{}{}_{}", "re_", "4Gk7mP2Q", "aB3dE5fG7hJ9kM2nP4qR6sT8"),
+            ),
+            (
+                "resend-api-key",
+                format!("RESEND_KEY={}{}", "re_", "Tq7Lm2Xw9Zk4Bn8Pc5"),
+            ),
+            (
+                "sendgrid-api-key",
+                format!("{}{}.{}Z", "SG.", "A1".repeat(11), "b9_".repeat(14)),
+            ),
+            ("twilio-api-key", format!("sid={}{}", "SK", "b9".repeat(16))),
+            (
+                "mailgun-api-key",
+                format!("curl -s --user api:{}{}", "key-", "a1".repeat(16)),
+            ),
+            ("discord-bot-token", discord.clone()),
+            ("discord-bot-token", format!("Bot {discord}")),
+            (
+                "shopify-access-token",
+                format!("{}{}", "shpat_", "a1".repeat(16)),
+            ),
+            (
+                "shopify-access-token",
+                format!("{}{}", "shpss_", "c3".repeat(16)),
+            ),
+            ("npm-token", format!("token={}{}", "npm_", "b9".repeat(18))),
+            (
+                "pypi-token",
+                format!("{}{}", "pypi-AgEIcHlwaS5vcmc", "A1".repeat(8)),
+            ),
+            (
+                "telegram-bot",
+                format!("{}:{}", "12345678", "A1_-".repeat(8) + "AbC"),
+            ),
+            (
+                "telegram-bot",
+                format!("bot={}:{}", "1234567890", "z9".repeat(17) + "Q"),
+            ),
+            (
+                "private-key",
+                format!("header {}{}", "-----BEGIN RSA ", "PRIVATE KEY-----"),
+            ),
+            (
+                "url-credentials",
+                format!("{}{}{}", "postgres://db_user:", "p%40ss", "@db:5432/db"),
+            ),
+            (
+                "digitalocean-token",
+                format!("ключ='{}{}'", "dop_v1_", "0123456789aBcDeF".repeat(4)),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_rule_has_a_positive_example_and_the_prefilter_keeps_it() {
+        let corpus = positives();
+        for rule in all() {
+            let examples: Vec<&String> = corpus
+                .iter()
+                .filter(|(id, _)| *id == rule.info.id)
+                .map(|(_, line)| line)
+                .collect();
+            assert!(
+                !examples.is_empty(),
+                "no positive example for {}",
+                rule.info.id
+            );
+            for line in examples {
+                assert!(
+                    !(rule.find)(line).is_empty(),
+                    "{} does not match its example {line:?}",
+                    rule.info.id
+                );
+                assert_prefilter_agrees(line);
+            }
+        }
+    }
+
+    #[test]
+    fn prefilter_agrees_on_variations_of_every_example() {
+        // Every prefix and suffix (covers the `min_len` edges: the shortest Discord token
+        // is exactly 58 bytes, Telegram 44), plus context around the value, case flips and
+        // several examples on one line.
+        let corpus: Vec<String> = positives().into_iter().map(|(_, line)| line).collect();
+        for line in &corpus {
+            for i in (0..=line.len()).filter(|&i| line.is_char_boundary(i)) {
+                assert_prefilter_agrees(&line[..i]);
+                assert_prefilter_agrees(&line[i..]);
+            }
+            for variant in [
+                format!("  x = \"{line}\" // ключ"),
+                format!("ü{line}ü"),
+                line.to_ascii_lowercase(),
+                line.to_ascii_uppercase(),
+                format!("{line} {line}"),
+            ] {
+                assert_prefilter_agrees(&variant);
+            }
+        }
+        assert_prefilter_agrees(&corpus.join(" "));
+        assert_prefilter_agrees("");
+    }
+
+    #[test]
+    fn prefilter_agrees_on_generated_lines() {
+        // Deterministic noise from trigger literals, halves of real examples and token
+        // alphabets: lines that nearly match, match twice, or match across fragments.
+        let mut fragments: Vec<String> = Vec::new();
+        for triggers in triggers() {
+            for literal in triggers.literals {
+                fragments.push(literal.to_string());
+                fragments.push(literal.to_ascii_uppercase());
+            }
+        }
+        for (_, line) in positives() {
+            let mid = (0..=line.len() / 2)
+                .rev()
+                .find(|&i| line.is_char_boundary(i))
+                .unwrap_or(0);
+            fragments.push(line[..mid].to_string());
+            fragments.push(line[mid..].to_string());
+        }
+        for piece in [
+            "A1",
+            "z9_",
+            "Ab3",
+            "0123456789",
+            "aBcDeF",
+            "-",
+            "_",
+            ".",
+            ":",
+            "=",
+            " ",
+            "'",
+            "\"",
+            "/",
+            "@",
+            "MTIzNDU2Nzg5MDEyMzQ1Njc",
+            "12345678",
+            "ю",
+        ] {
+            fragments.push(piece.to_string());
+        }
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut matched = 0;
+        for _ in 0..20_000 {
+            let parts = 1 + (next() % 8) as usize;
+            let line: String = (0..parts)
+                .map(|_| fragments[(next() % fragments.len() as u64) as usize].as_str())
+                .collect();
+            assert_prefilter_agrees(&line);
+            matched += usize::from(!super::super::scan_line(all(), 1, &line).is_empty());
+        }
+        // The generator must actually produce findings, or the test proves nothing.
+        assert!(
+            matched > 1_000,
+            "only {matched} generated lines had findings"
+        );
+    }
+
+    #[test]
+    fn rules_without_literals_always_run() {
+        // Fail open: no literals (or an empty one) means the rule runs on every line.
+        let table = TriggerTable::new(&[
+            Triggers::ALWAYS,
+            Triggers::any(&["abc"]),
+            Triggers::any(&[""]),
+            Triggers {
+                literals: &["Q"],
+                ignore_case: true,
+                min_len: 5,
+            },
+        ]);
+        assert_eq!(table.candidates(""), 0b0101);
+        assert_eq!(table.candidates("xabcx"), 0b0111);
+        assert_eq!(table.candidates("ABC q"), 0b1101);
+        assert_eq!(table.candidates("ABq"), 0b0101, "shorter than min_len");
+        // The real table: one trigger entry per rule, in rule order.
+        assert_eq!(triggers().len(), all().len());
     }
 }

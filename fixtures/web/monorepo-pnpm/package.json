@@ -1,0 +1,1 @@
+{ "name": "jetscan-fixture-monorepo", "private": true, "devDependencies": { "turbo": "2.0.0", "vite": "5.4.10" } }

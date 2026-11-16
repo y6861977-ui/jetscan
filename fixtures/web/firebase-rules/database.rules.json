@@ -1,0 +1,15 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": "now < 1735689600000",
+    "leaderboard": {
+      ".read": true
+    },
+    "users": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid"
+      }
+    }
+  }
+}

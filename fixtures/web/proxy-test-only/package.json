@@ -1,0 +1,1 @@
+{ "name": "jetscan-fixture-proxy-test-only", "private": true, "dependencies": { "next": "16.4.3", "react": "19.2.0" } }

@@ -1,0 +1,36 @@
+N android=http://schemas.android.com/apk/res/android
+E manifest
+  A android:versionCode = int 7
+  A android:versionName = string "1.0.7"
+  A package = string "com.jetscan.fixture.debuggable"
+  E uses-sdk
+    A android:minSdkVersion = int 21
+    A android:targetSdkVersion = int 30
+  E uses-permission
+    A android:name = string "android.permission.INTERNET"
+  E uses-permission
+    A android:name = string "android.permission.READ_CONTACTS"
+  E application
+    A android:allowBackup = bool true
+    A android:debuggable = bool true
+    A android:label = string "Jetscan Fixture"
+    A android:usesCleartextTraffic = bool true
+    E activity
+      A android:exported = bool true
+      A android:name = string ".MainActivity"
+      E intent-filter
+        E action
+          A android:name = string "android.intent.action.MAIN"
+        E category
+          A android:name = string "android.intent.category.LAUNCHER"
+    E service
+      A android:exported = bool true
+      A android:name = string ".SyncService"
+    E receiver
+      A android:exported = bool false
+      A android:name = string ".BootReceiver"
+    E provider
+      A android:authorities = string "com.jetscan.fixture.notes"
+      A android:exported = bool true
+      A android:grantUriPermissions = bool true
+      A android:name = string ".NotesProvider"

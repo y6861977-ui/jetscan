@@ -2,8 +2,13 @@ use jetscan::baseline::{Baseline, Hidden};
 use jetscan::deps::Severity;
 use jetscan::license::{self, Status};
 use jetscan::secrets::{machine, report, scan};
-use jetscan::{combined, deps, hook, html, hygiene, sarif, sbom, ui};
+use jetscan::{
+    apk_audit, combined, deps, finding_v2, hook, html, hygiene, sarif, sbom, ui, web_audit,
+};
 use std::path::{Path, PathBuf};
+
+mod mcp;
+mod menu;
 
 const USAGE: &str = "\
 usage: jetscan scan [path] [options]      secrets + vulnerable dependencies + GitHub Actions
@@ -12,6 +17,13 @@ usage: jetscan scan [path] [options]      secrets + vulnerable dependencies + Gi
        jetscan machine [options]          secrets on this whole machine (+ --deps)
        jetscan hook install|uninstall     git pre-commit hook: block commits with secrets
        jetscan license                    show the jetscan Teams license status
+       jetscan menu                       numbered menu, no commands to type (also: no arguments)
+       jetscan mcp                        MCP server on stdio for AI coding tools (see `jetscan mcp --help`)
+
+Alpha (rules may change; see `<command> --help`):
+       jetscan web source [path]          Next.js / Vite React source audit
+       jetscan apk <file.apk>             Android APK static audit (nothing is run)
+       jetscan resolve plan [path]        fix plan -> preview -> apply --confirm -> verify
 
 Secrets: API keys, tokens, private keys, .env passwords in files and git history.
 `machine` also checks plaintext credential stores (~/.git-credentials, ~/.npmrc,
@@ -75,6 +87,14 @@ enum Cmd {
 
 fn jetscan_main(args: &[String]) -> i32 {
     let cmd = match args.first().map(String::as_str) {
+        // Double-clicked jetscan.exe / typed `jetscan` in a terminal: the menu. Pipes and CI
+        // still get the usage text below.
+        None if menu::interactive() => return run_menu(),
+        Some("menu") if args.len() == 1 => return run_menu(),
+        Some("menu") => {
+            ui::eprint_error("`jetscan menu` takes no arguments");
+            return 2;
+        }
         None | Some("-h") | Some("--help") => {
             println!("jetscan {}\n\n{USAGE}", env!("CARGO_PKG_VERSION"));
             return 0;
@@ -89,6 +109,17 @@ fn jetscan_main(args: &[String]) -> i32 {
         Some("machine") => Cmd::Machine,
         Some("hook") => return run_hook(&args[1..]),
         Some("license") if args.len() == 1 => return run_license(),
+        // MCP server over stdio for AI coding tools (src/mcp/).
+        Some("mcp") => return mcp::run(&args[1..]),
+        // Web Source Audit alpha: not in USAGE until the Pro gate (roadmap M4) is decided.
+        // `--json-v2`: strict shared Findings V2 JSON (src/finding_v2/cli.rs).
+        Some("web") if wants_json_v2(args) => return finding_v2::cli::run_web(&args[1..]),
+        Some("web") => return web_audit::cli::run(&args[1..]),
+        // APK Static Audit alpha: hidden from USAGE for the same reason as `web`.
+        Some("apk") if wants_json_v2(args) => return finding_v2::cli::run_apk(&args[1..]),
+        Some("apk") => return apk_audit::cli::run(&args[1..]),
+        // Free Resolve (plan / preview / apply --confirm / verify): hidden from USAGE until released.
+        Some("resolve") => return jetscan::resolve::cli::run(&args[1..]),
         Some(other) => {
             ui::eprint_error(&format!("unknown command '{}'", ui::sanitize_line(other)));
             ui::eprint_hint("run `jetscan --help`");
@@ -299,7 +330,8 @@ impl Args {
 /// Пускает платный флаг или объясняет, почему нет. Предупреждения — в stderr:
 /// stdout у SARIF / JSON / SBOM должен остаться чистым документом.
 fn teams(flag: &str, status: &Status) -> Result<(), String> {
-    let get = "Put the key in JETSCAN_LICENSE (a CI secret) or ~/.jetscan/license";
+    let get = "Get a key at https://jetscan.jet.kim and put it in JETSCAN_LICENSE (a CI secret) \
+               or ~/.jetscan/license";
     match status {
         Status::Active { license, days_left } => {
             if *days_left <= 30 {
@@ -328,7 +360,7 @@ fn teams(flag: &str, status: &Status) -> Result<(), String> {
         )),
         Status::Expired { license, .. } => Err(format!(
             "the jetscan Teams license for {} expired on {}, so {flag} is off. Scans without \
-             it keep working; renew the key to turn it back on",
+             it keep working; renew at https://jetscan.jet.kim to turn it back on",
             ui::sanitize_line(&license.org),
             license::format_date(license.expires)
         )),
@@ -336,6 +368,11 @@ fn teams(flag: &str, status: &Status) -> Result<(), String> {
             "{flag} needs a valid jetscan Teams license: {reason}. {get}"
         )),
     }
+}
+
+/// `web`/`apk` alpha: V2 JSON goes through finding_v2's redacted export.
+fn wants_json_v2(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--json-v2")
 }
 
 /// `jetscan license`: какой ключ стоит. Сам ключ не печатается никогда.
@@ -354,6 +391,7 @@ fn run_license() -> i32 {
         Status::Free => {
             println!("jetscan Free — no license key (JETSCAN_LICENSE or ~/.jetscan/license).");
             println!("Every scan is free; --sarif, --sbom and --baseline need jetscan Teams.");
+            println!("Teams: https://jetscan.jet.kim");
         }
         Status::Active {
             license: l,
@@ -629,6 +667,29 @@ fn run_machine(a: Args) -> i32 {
         rep.actionable() + combined::issues_failing(&issues),
         &refs,
         a.fail_on,
+    )
+}
+
+/// The interactive menu: every action runs through `jetscan_main`, exactly as typed.
+fn run_menu() -> i32 {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let mut out = std::io::stdout();
+    menu::run(
+        &mut input,
+        &mut out,
+        &cwd,
+        &std::env::temp_dir(),
+        &mut |args: &[String]| {
+            // A bug in one check must not close the window the user is reading.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| jetscan_main(args)))
+                .unwrap_or_else(|_| {
+                    ui::eprint_error("jetscan stopped on an internal error (see above)");
+                    2
+                })
+        },
+        &mut menu::System,
     )
 }
 

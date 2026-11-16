@@ -1,0 +1,8 @@
+name: Echo the comment
+on: issue_comment
+jobs:
+  reply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print it
+        run: echo ${{ github.event.comment.body }}

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- targetSdk 16 variant: default-exported provider, default cleartext, user CAs trusted, backup on. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.jetscan.fixture.legacy">
+    <uses-sdk android:minSdkVersion="14" android:targetSdkVersion="16" />
+    <application android:label="Legacy">
+        <provider android:name=".Notes" android:authorities="com.jetscan.fixture.legacy.notes" />
+        <receiver android:name=".PushReceiver">
+            <intent-filter>
+                <action android:name="com.jetscan.fixture.PUSH" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

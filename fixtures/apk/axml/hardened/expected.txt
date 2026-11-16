@@ -1,0 +1,19 @@
+N android=http://schemas.android.com/apk/res/android
+E manifest
+  A android:versionCode = int 1
+  A android:versionName = string "1.0"
+  A package = string "com.jetscan.fixture.hardened"
+  E uses-sdk
+    A android:minSdkVersion = int 26
+    A android:targetSdkVersion = int 34
+  E application
+    A android:allowBackup = bool false
+    A android:debuggable = bool false
+    A android:label = string "Привет & hardened"
+    A android:usesCleartextTraffic = bool false
+    E activity
+      A android:exported = bool false
+      A android:name = string ".MainActivity"
+    E service
+      A android:name = string ".Job"
+      A android:permission = string "android.permission.BIND_JOB_SERVICE"
