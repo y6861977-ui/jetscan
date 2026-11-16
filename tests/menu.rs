@@ -45,12 +45,10 @@ fn jetscan(args: &[&str], cwd: &Path, script: &str) -> (i32, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(script.as_bytes())
-        .unwrap();
+    // jetscan may exit without reading stdin (e.g. no terminal -> usage); a closed pipe is fine.
+    if let Err(e) = child.stdin.take().unwrap().write_all(script.as_bytes()) {
+        assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
+    }
     let out = child.wait_with_output().unwrap();
     (
         out.status.code().unwrap_or(-1),
