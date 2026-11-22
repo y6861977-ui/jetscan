@@ -331,9 +331,11 @@ pub mod adapters;
 
 // jetscan Pro: `--json-v2` for web / apk / android / ios, and their scanner tests.
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 pub mod cli;
 
 #[cfg(all(test, feature = "pro"))]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 mod scanner_tests;
 
 pub mod core_capture;

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // jetscan Pro: the Pro items through the license gate (tests/menu/pro.rs, private repository only).
 #[cfg(feature = "pro")]
 #[path = "menu/pro.rs"]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 mod pro;
 
 struct Temp(PathBuf);

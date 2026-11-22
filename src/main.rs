@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 mod mcp;
 mod menu;
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 mod pro;
 
 const USAGE_COMMANDS: &str = "\

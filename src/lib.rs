@@ -4,8 +4,10 @@
 //! repository and are never part of the public export (scripts/public-files.txt).
 
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 pub mod android_audit;
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 pub mod apk_audit;
 pub mod baseline;
 pub mod combined;
@@ -17,6 +19,7 @@ pub mod hook;
 pub mod html;
 pub mod hygiene;
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 pub mod ios_audit;
 pub mod json;
 pub mod license;
@@ -26,7 +29,9 @@ pub mod sbom;
 pub mod secrets;
 pub mod ui;
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 pub mod url_audit;
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 pub mod web_audit;
 pub mod workflows;

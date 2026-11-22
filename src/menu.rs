@@ -100,6 +100,7 @@ struct Session<'a, R: BufRead, W: Write> {
 
 mod console;
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 mod pro;
 /// Stable in free and Pro builds; numbers 7-11 belong to Pro.
 const CONSOLE: &str = "12";

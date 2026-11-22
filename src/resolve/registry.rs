@@ -114,4 +114,5 @@ mod tests {
 
 // jetscan Pro: every Android / iOS source rule id maps to a resolver.
 #[cfg(all(test, feature = "pro"))]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 mod pro_tests;

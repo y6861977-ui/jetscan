@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 mod pro;
 
 /// What a tool call needs from the server. Injected so tests can fake the license

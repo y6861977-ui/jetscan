@@ -144,6 +144,7 @@ fn one_based(n: usize) -> Result<Option<u32>, ModelError> {
 
 // jetscan Pro: Web Source, APK, Android and iOS audit adapters.
 #[cfg(feature = "pro")]
+#[rustfmt::skip] // Pro-only file: absent from the public export, so `cargo fmt` must not open it
 mod pro;
 #[cfg(feature = "pro")]
 pub use pro::{android, apk, ios, web};
