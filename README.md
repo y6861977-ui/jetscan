@@ -1,4 +1,9 @@
-# jetscan
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/lockup-horizontal-dark.svg">
+    <img src="docs/brand/lockup-horizontal.svg" height="56" alt="jetscan">
+  </picture>
+</h1>
 
 Scan for leaked secrets, vulnerable dependencies and risky CI workflows — locally.
 No source-code upload. No account, no mandatory cloud.
@@ -78,22 +83,22 @@ including where jetscan loses: [bench/README.md](bench/README.md), with scripts 
 
 ## Commands
 
+Every command, option and exit code is in the [user guide](docs/guide/public-en.md).
+
 ```
 usage: jetscan scan [path] [options]      secrets + vulnerable dependencies + GitHub Actions
        jetscan secrets [path] [options]   leaked secrets only (fully offline)
        jetscan deps [path] [options]      vulnerable dependencies only
        jetscan machine [options]          secrets on this whole machine (+ --deps)
        jetscan hook install|uninstall     git pre-commit hook: block commits with secrets
-       jetscan license                    show the jetscan Teams license status
+       jetscan license                    show the license key: plan, expiry, what it unlocks
        jetscan menu                       numbered menu, no commands to type (also: no arguments)
        jetscan mcp                        MCP server on stdio for AI coding tools (see `jetscan mcp --help`)
 
 Alpha (rules may change; see `<command> --help`):
-       jetscan web source [path]          Next.js / Vite React source audit
-       jetscan apk <file.apk>             Android APK static audit (nothing is run)
-       jetscan android [path]             Android source project audit (Gradle, Kotlin/Java)
-       jetscan ios [path]                 iOS source project audit (Xcode, Swift/Objective-C)
        jetscan resolve plan [path]        fix plan -> preview -> apply --confirm -> verify
+
+jetscan Pro adds website source, live website (URL), APK, Android and iOS app audits: https://jetscan.jet.kim
 ```
 
 | Command | What it does | Network |
@@ -104,11 +109,7 @@ Alpha (rules may change; see `<command> --help`):
 | `jetscan machine [--deps]` | credential stores, shell history, all repositories | none (OSV with `--deps`) |
 | `jetscan menu` | the same checks from a numbered [menu](#menu) | as the check you pick |
 | `jetscan mcp` | the checks as tools for [AI editors](#ai-editors-jetscan-mcp) | none unless the AI asks for an online OSV lookup |
-| `jetscan web source [path]` | [alpha](#alpha-website-source-android-ios-resolve): website source audit | none |
-| `jetscan apk <file.apk>` | [alpha](#alpha-website-source-android-ios-resolve): Android APK audit | none |
-| `jetscan android [path]` | [alpha](#alpha-website-source-android-ios-resolve): Android app source audit | none |
-| `jetscan ios [path]` | [alpha](#alpha-website-source-android-ios-resolve): iOS app source audit | none |
-| `jetscan resolve ...` | [alpha](#alpha-website-source-android-ios-resolve): fix plan, preview, apply, verify | none |
+| `jetscan resolve ...` | [alpha](#resolve-alpha): fix plan, preview, apply, verify | none |
 
 Options:
 
@@ -247,13 +248,21 @@ actually safe was reported as exploitable.
 ## Menu
 
 Run `jetscan` with no arguments in a terminal, or double-click `jetscan.exe`, and you get a
-numbered menu: scan a project, scan for secrets only, the alpha website, APK, Android and
-iOS source audits, Resolve, the whole-machine scan, the license status, and the setup for AI editors. It asks
-for a folder or a file (you can drag it into the window) and a few yes/no questions, then
+numbered menu: scan a project, scan for secrets only, Resolve, the whole-machine scan, the
+license status, and the setup for AI editors. It asks for a folder (you can drag it into the
+window) and a few yes/no questions, then
 runs the same command as the CLI and prints that command, so you can type it next time.
 Resolve writes nothing unless you type `yes`. When the input is not a terminal (a pipe,
 CI), `jetscan` with no arguments prints the usage instead; `jetscan menu` opens the menu
 explicitly.
+
+Item **12 — jetscan console** opens a `jetscan> ` prompt in both the free and Pro builds.
+Type `secrets . --no-history`, `jetscan scan "C:\My Projects\app"`, or any other jetscan
+command. It runs through the same CLI in this process; this is not a system shell.
+`menu`, `console` and `mcp` are refused here. Use `help`, `help secrets`, `history`, `clear`
+and `exit` / `quit` / `0` to return to the menu. History stays in memory for this menu
+session only; recognized secrets, license arguments and refused lines are omitted.
+Each run ends with `done`, `found issues (exit 1)` or `error (exit 2)`.
 
 ## AI editors (`jetscan mcp`)
 
@@ -265,7 +274,6 @@ example after it writes code:
 |---|---|
 | `scan_secrets`, `scan_dependencies`, `scan_github_actions` | free |
 | `resolve_plan`: a fix plan and diff preview; it never changes files | free |
-| `audit_web_source`, `audit_apk`, `audit_android_source`, `audit_ios_source` | need a license key (see [jetscan Teams](#jetscan-teams)) |
 
 Claude Code:
 
@@ -274,7 +282,7 @@ claude mcp add jetscan -- jetscan mcp
 ```
 
 Configs for Cursor, VS Code and Devin Desktop (Windsurf), the workspace rules and
-troubleshooting are in [docs/mcp/README.md](docs/mcp/README.md). The menu (item 10) prints
+troubleshooting are in [docs/mcp/README.md](docs/mcp/README.md). The menu (item 6) prints
 the same setup with the full path of your jetscan.
 
 What to expect:
@@ -290,78 +298,10 @@ What to expect:
   Desktop configs follow their documentation but have not been tested against those
   editors yet.
 
-## Alpha: website source, Android, iOS, Resolve
+## Resolve (alpha)
 
-These five commands are new in 0.2 and marked alpha: rules, output and exit codes may
-change. They are local and read-only (Resolve writes only after `--confirm`) and send
-nothing over the network. A clean result means these rules found nothing, not that the
-app is secure.
-
-**`jetscan web source [path]`** reads the source of a Next.js (App or Pages Router) or
-Vite React project. Nothing is built, run or fetched; it is not a scan of a live URL.
-Rules: privileged provider keys in client-side code, secrets in `NEXT_PUBLIC_` / `VITE_`
-variables (they are inlined into the browser bundle), non-constant HTML written through
-`dangerouslySetInnerHTML` / `innerHTML`, state-changing Next.js route handlers and Server
-Actions with no visible access check, Supabase service-role keys the browser can see, CORS
-that reflects any origin with credentials, and public browser source maps in the
-production build config. Findings are review pointers (`potential` / `needs_review`),
-not proof: "no visible access check" can be a check jetscan cannot see. Dependencies are
-not part of this command; use `jetscan deps`.
-
-**`jetscan apk <file.apk>`** reads an Android APK without installing or running it:
-debuggable builds, exported components, backup settings, cleartext traffic and
-user-trusted CAs, sensitive permissions, and provider keys in resources, assets and the
-string pool of `classes*.dex`. DEX code (bytecode) and the signature are not analysed;
-a key found in DEX may belong to a bundled library.
-
-**`jetscan android [path]`** reads the source project of an Android app (Gradle, Kotlin /
-Java, XML) and gives exact `file:line:column`. Nothing is built or run: Gradle is not
-started. It checks the merged manifest (main plus release and flavor source sets) for
-exported components, debuggable, backup and cleartext settings and sensitive permissions;
-Gradle for debuggable or unminified (R8 off) release builds; signing passwords written as
-literals in Gradle or `*.properties`; keystore files in the project tree; provider keys
-in code, resources and `buildConfigField` / `resValue`; and code patterns: trust-all
-`TrustManager` / `HostnameVerifier`, WebView JavaScript bridges and `file://` access,
-weak cryptography (ECB or default AES, DES / RC4, fast hashes near passwords,
-`MODE_WORLD_*` files), token-like values in plain `SharedPreferences`, and secret-named
-variables passed to `Log` / Timber. 14 rules, documented in
-[docs/rules/android](docs/rules/android). Field test: 5 open-source apps (NewPipe,
-Thunderbird / K-9, Nextcloud, Aegis, AntennaPod); after fixing the false-positive
-patterns of the first round, the second round gave 69 findings, 0 false positives (47
-clear, 22 correct but by design, such as an exported entry point). These are the same
-apps the fixes were made for, so treat it as a sanity check, not a benchmark. Limits:
-Gradle is read for literals only (values computed at build time are reported as not fully
-checked); debug and test manifests and the manifests of library AARs are not analysed;
-code patterns are token matches, not data flow; keystores are found by name and never
-opened; git is not run, so "is it committed" is not checked.
-
-**`jetscan ios [path]`** reads the source project of an iOS app (Xcode project, Swift /
-Objective-C, property lists, entitlements, xcconfig) and gives exact `file:line:column`.
-Nothing is built or run: `xcodebuild` is not started, and the built `.ipa` is not
-analysed. It reads the targets and build configurations from `project.pbxproj` and
-checks: App Transport Security exceptions in Info.plist; custom URL schemes (info: entry
-points that must validate input); `get-task-allow` in release entitlements and wildcard
-associated domains or keychain groups; provider keys in code, plists, xcconfig and
-`.env`; signing files in the tree (`.p12`, `AuthKey_*.p8`, keychains, provisioning
-profiles; found by name and the first 64 bytes, contents never shown); and code patterns:
-tokens written to `UserDefaults`, Keychain items with `kSecAttrAccessibleAlways`,
-trust-all `URLSession` challenge handlers, `UIWebView` and `file://` access in web views,
-weak cryptography (ECB, DES / RC4, fast hashes near passwords), and secret-named
-variables passed to `print` / `NSLog` / loggers or copied to the pasteboard. 12 rules,
-documented in [docs/rules/ios](docs/rules/ios). Field test: 6 open-source apps (Signal,
-Element, DuckDuckGo, Firefox + Focus, NetNewsWire, Wikipedia); the first round gave 68
-findings with 13 false positives, 9 patterns were fixed, and the second round gave 55
-findings, 0 false positives (44 clear, 11 correct but by design, such as a browser
-allowing arbitrary loads). These are the same apps the fixes were made for, so treat it
-as a sanity check, not a benchmark; 34 of the 55 are info-level URL schemes. Limits:
-build settings are read as literals from `project.pbxproj` (xcconfig `#include` and
-`$(inherited)` best effort, `[sdk=…]` / `[config=…]` conditions ignored; an unresolved
-variable is reported as not fully checked); an Info.plist generated from
-`INFOPLIST_KEY_*` settings is not rebuilt; XcodeGen `project.yml` and Tuist are not
-parsed (without a committed `.pbxproj` the configurations are unknown and the project
-check is partial); `Package.swift` is recognised but not evaluated; Pods, Carthage and
-SPM checkouts are skipped; binary plists are reported as not checked; code patterns are
-token matches, not data flow, and test folders are not checked for them.
+Resolve is new in 0.2 and marked alpha: output and exit codes may change. It is local,
+sends nothing over the network and writes only after `--confirm`.
 
 **`jetscan resolve`** turns findings into a fix plan you check before anything changes:
 
@@ -375,7 +315,7 @@ jetscan resolve verify jetscan-plan.json         # re-runs the check per finding
 Today exactly one kind of edit is automatic: untrusted text in a GitHub Actions `run:`
 script (`gha-script-injection`) is moved into an environment variable, and only when the
 edit can be proven safe for that file. Everything else (leaked keys, dependency upgrades,
-`permissions: write-all`, web, APK, Android and iOS findings) gets advice, not an edit. `apply` writes
+`permissions: write-all`, the findings of jetscan Pro) gets advice, not an edit. `apply` writes
 all files or none, refuses a file that changed since the plan, and runs no shell, package
 manager or git. `verify` speaks only about the findings in the plan. Details and the
 threat model: [docs/resolve/README.md](docs/resolve/README.md).
@@ -466,14 +406,8 @@ reports a company needs: SARIF for code scanning, SBOM for audits, and the basel
 | Price | $0 | **$499 the first year**, then $990 / year |
 | All checks, `--exit-code`, JSON, HTML, pre-commit | ✓ | ✓ |
 | Menu; `jetscan mcp` secrets, dependencies, GitHub Actions, fix plans | ✓ | ✓ |
-| `jetscan web source`, `jetscan apk`, `jetscan android`, `jetscan ios` in the CLI (alpha) | ✓ | ✓ |
 | `--sarif`, `--sbom`, `--baseline` | — | ✓ |
-| `audit_web_source`, `audit_apk`, `audit_android_source`, `audit_ios_source` through `jetscan mcp` | — | ✓ |
-
-The website, APK, Android and iOS source audits are free in the CLI while they are alpha. Through `jetscan mcp`
-they run only with a license key; today a jetscan Teams key unlocks them, on the same terms
-as the Teams flags (including the 14-day grace period below). Without a key the AI gets a
-short note on where to get one, and nothing is scanned.
+| jetscan Pro audits (the separate Pro build) | — | ✓ |
 
 **Buy at [jetscan.jet.kim](https://jetscan.jet.kim)** (crypto, via Cryptomus). The key comes
 by email right after the payment; renewals and a copy of the key are in your account there.
@@ -481,7 +415,8 @@ by email right after the payment; renewals and a copy of the key are in your acc
 The license key is a signed text (organization, seats, expiry date). jetscan checks the
 signature **on your machine**: no account, no activation, no network, so it works in an
 air-gapped CI. Put it in `JETSCAN_LICENSE` (a CI secret) or `~/.jetscan/license`;
-`jetscan license` shows the status and never prints the key. Thirty days before the expiry
+`jetscan license` shows the plan, the expiry date and what the key unlocks, and never prints
+the key. Thirty days before the expiry
 date jetscan starts warning on stderr; after it, the paid flags keep working for 14 more
 days, then stop — scans without them keep working.
 
@@ -490,6 +425,45 @@ a year, not forever), and moving the system clock back extends it. This is a tru
 on purpose, not DRM. Using the free part of jetscan at work, in a company of any size, is
 allowed by its license; a Teams license is what lets your organization use the Teams features,
 and it pays for the work.
+
+## jetscan Pro
+
+jetscan Pro is a separate build of jetscan with audits for websites and mobile apps:
+
+- `jetscan web source [path]`: the source of a Next.js or Vite React project. Privileged keys
+  in client code, secrets in `NEXT_PUBLIC_` / `VITE_` variables, state-changing route handlers
+  and Server Actions without a visible access check, non-constant HTML in DOM sinks, Supabase
+  service-role keys the browser can see, CORS with credentials for any origin, public source maps.
+- `jetscan apk <file.apk>`: an Android APK, without installing or running it. Debuggable
+  builds, exported components, backup and cleartext settings, permissions, keys in resources
+  and DEX strings.
+- `jetscan android [path]` and `jetscan ios [path]`: Android (Gradle, Kotlin / Java) and iOS
+  (Xcode, Swift / Objective-C) source projects. Manifest, plist and entitlement settings,
+  signing files and passwords in the repository, provider keys, trust-all TLS, risky web
+  views, weak cryptography, secrets in logs.
+- `jetscan url <https://site>`: a passive check of a published website — only the requests a
+  browser makes, to that site only: security headers, cookie flags, exposed `.git` / `.env`,
+  public source maps, server-side keys in its JavaScript.
+- The same audits as tools for AI editors (`jetscan mcp`) and in the menu.
+
+The source and APK audits run on your machine and send nothing; the URL check talks only to
+the site you name. jetscan Pro is closed source: its code is not in this repository.
+
+**How Pro is unlocked.** With a key from [jetscan.jet.kim](https://jetscan.jet.kim), put in
+`~/.jetscan/license` or `JETSCAN_LICENSE` and checked on your machine like the Teams key:
+
+| Key | Unlocks |
+|---|---|
+| Free trial | one audit of your choice (website source, APK, Android or iOS), 2 scans |
+| jetscan Pro (personal, yearly) | every Pro audit, including the URL check |
+| One-time audit (30 days) | every Pro audit, for one project |
+| jetscan Teams | every Pro audit and the CI reports |
+
+Without a key a Pro command prints what it does and where to get a key, and scans nothing.
+`--help` always works. Prices and the trial: [jetscan.jet.kim](https://jetscan.jet.kim).
+
+Versions 0.2.0 to 0.3.0 of this repository shipped early (alpha) versions of these audits in
+the public source and release binaries. Later public versions do not include them.
 
 ## Install
 
@@ -522,8 +496,8 @@ for the dependency check (ships with Windows 10+, macOS and most Linux distribut
 
 ## Status
 
-Early (0.2). Tests run in CI on Windows, Linux and macOS. `web source`, `apk`, `android`,
-`ios` and `resolve` are alpha (see above). Known limits:
+Early (0.3). Tests run in CI on Windows, Linux and macOS. `resolve` is alpha (see above).
+Known limits:
 
 - Lockfile parsers are strict by design (a file they don't fully understand is "not
   checked"); they were verified on real lockfiles of cargo, kubernetes, react, yarn, jest,

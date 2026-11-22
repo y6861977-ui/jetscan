@@ -329,9 +329,11 @@ pub mod wire;
 
 pub mod adapters;
 
+// jetscan Pro: `--json-v2` for web / apk / android / ios, and their scanner tests.
+#[cfg(feature = "pro")]
 pub mod cli;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "pro"))]
 mod scanner_tests;
 
 pub mod core_capture;

@@ -1,2 +1,0 @@
-# NEGATIVE: a udev rules file, not Firebase. Ignored by content.
-SUBSYSTEM=="usb", MODE="0666"

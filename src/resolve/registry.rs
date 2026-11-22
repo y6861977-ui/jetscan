@@ -110,71 +110,8 @@ mod tests {
             assert_eq!(lookup(rule.info.id), Resolver::Credential);
         }
     }
-
-    #[test]
-    fn every_android_source_rule_has_a_guidance_resolver() {
-        use crate::android_audit::rules as a;
-        for id in [a::SECRET_ID, a::SIGNING_ID, a::KEYSTORE_ID] {
-            assert_eq!(lookup(id), Resolver::Credential, "{id}");
-        }
-        let review = [
-            a::EXPORT_ID,
-            a::DEBUG_ID,
-            a::NET_ID,
-            a::BACKUP_ID,
-            a::PERMS_ID,
-            a::MINIFY_ID,
-            a::WEBVIEW_ID,
-            a::TLS_ID,
-            a::CRYPTO_ID,
-            a::STORAGE_ID,
-            a::LOG_ID,
-        ];
-        for id in review {
-            assert_eq!(lookup(id), Resolver::ApkReview, "{id}");
-        }
-        // A new ANDROID-* rule must get a resolver here, never fall to GuidanceOnly.
-        assert_eq!(a::ALL.len(), 3 + review.len());
-        for id in a::ALL {
-            assert_ne!(lookup(id), Resolver::GuidanceOnly, "{id}");
-        }
-        // Case and suffix spoofs stay guidance-only.
-        for id in ["android-tls-011", "ANDROID-TLS-011 ", "ANDROID-TLS-999"] {
-            assert_eq!(lookup(id), Resolver::GuidanceOnly, "{id:?}");
-        }
-    }
-
-    #[test]
-    fn every_ios_source_rule_has_a_guidance_resolver() {
-        use crate::ios_audit::rules as i;
-        for id in [i::SECRET_ID, i::SIGNING_ID] {
-            assert_eq!(lookup(id), Resolver::Credential, "{id}");
-        }
-        let review = [
-            i::ATS_ID,
-            i::URLSCHEME_ID,
-            i::ENTITLEMENTS_ID,
-            i::STORAGE_ID,
-            i::KEYCHAIN_ID,
-            i::TLS_ID,
-            i::WEBVIEW_ID,
-            i::CRYPTO_ID,
-            i::LOG_ID,
-            i::PASTEBOARD_ID,
-        ];
-        for id in review {
-            assert_eq!(lookup(id), Resolver::IosReview, "{id}");
-        }
-        // A new IOS-* rule must get a resolver here, never fall to GuidanceOnly.
-        assert_eq!(i::ALL.len(), 2 + review.len());
-        for id in i::ALL {
-            assert_ne!(lookup(id), Resolver::GuidanceOnly, "{id}");
-        }
-        let text = Resolver::IosReview.guidance();
-        assert!(text.contains("Xcode") && !text.contains("APK"), "{text}");
-        // Case and suffix spoofs stay guidance-only.
-        for id in ["ios-tls-008", "IOS-TLS-008 ", "IOS-TLS-999"] {
-            assert_eq!(lookup(id), Resolver::GuidanceOnly, "{id:?}");
-        }
-    }
 }
+
+// jetscan Pro: every Android / iOS source rule id maps to a resolver.
+#[cfg(all(test, feature = "pro"))]
+mod pro_tests;

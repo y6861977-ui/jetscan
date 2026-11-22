@@ -2,6 +2,12 @@
 //!
 //! Colors are emitted only for a terminal when `NO_COLOR` is unset. The
 //! decision is cached separately for stdout and stderr for the process.
+//!
+//! Windows consoles (the classic conhost window a double-clicked jetscan.exe opens) show
+//! escape codes as text (`←[1m`) unless virtual terminal processing is switched on for
+//! that window. `init_console` switches it on; a console where that fails gets no colors.
+//! Text needs nothing extra: when stdout is a console, Rust's std writes it with
+//! `WriteConsoleW` (UTF-16), so `→`, `—`, `✓` do not depend on the console code page.
 
 use std::io::IsTerminal;
 use std::sync::OnceLock;
@@ -24,12 +30,134 @@ fn no_color() -> bool {
 
 fn stdout_colors() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| !no_color() && std::io::stdout().is_terminal())
+    *ON.get_or_init(|| {
+        let out = std::io::stdout();
+        colors_on(no_color(), out.is_terminal(), || console::enable_vt(&out))
+    })
 }
 
 fn stderr_colors() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| !no_color() && std::io::stderr().is_terminal())
+    *ON.get_or_init(|| {
+        let err = std::io::stderr();
+        colors_on(no_color(), err.is_terminal(), || console::enable_vt(&err))
+    })
+}
+
+/// Prepares this terminal for jetscan's output: on Windows, escape-code colors for stdout
+/// and stderr (see the module comment). Call once at startup, before any output; calling it
+/// again does nothing. Without it, the first colored text does the same.
+pub fn init_console() {
+    stdout_colors();
+    stderr_colors();
+}
+
+/// Whether to color a stream. `vt` is asked only for a terminal without `NO_COLOR`.
+fn colors_on(no_color: bool, terminal: bool, vt: impl FnOnce() -> console::Vt) -> bool {
+    // `NotConsole` with `terminal`: a Git Bash (mintty) or Cygwin terminal on Windows. Those
+    // are pipes that render escape codes themselves.
+    !no_color && terminal && vt() != console::Vt::Unsupported
+}
+
+/// Escape-code support of a Windows console. Other systems: terminals render them already.
+mod console {
+    // Outside Windows only the tests drive `enable`.
+    #![cfg_attr(not(windows), allow(dead_code))]
+
+    /// What enabling escape codes on one output stream found.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum Vt {
+        /// Not a Windows console (a pipe, a file, or any non-Windows terminal).
+        NotConsole,
+        /// A console that renders escape codes (already did, or does now).
+        On,
+        /// A console that cannot: older Windows, or the mode could not be changed.
+        Unsupported,
+    }
+
+    pub const ENABLE_PROCESSED_OUTPUT: u32 = 0x0001;
+    pub const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+
+    /// Read and write the console mode of one stream (Win32 on Windows; a fake in tests).
+    pub trait Mode {
+        /// The current mode; `None` if the stream is not a console.
+        fn get(&mut self) -> Option<u32>;
+        /// Sets the mode; `false` if the console refused it.
+        fn set(&mut self, mode: u32) -> bool;
+    }
+
+    /// Switches escape-code processing on, keeping the other mode bits, and checks that it
+    /// stuck. Repeating it is harmless: an enabled console is left as it is.
+    pub fn enable(console: &mut impl Mode) -> Vt {
+        let Some(mode) = console.get() else {
+            return Vt::NotConsole;
+        };
+        if mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0 {
+            return Vt::On;
+        }
+        let wanted = mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT;
+        if !console.set(wanted) {
+            return Vt::Unsupported;
+        }
+        match console.get() {
+            Some(now) if now & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0 => Vt::On,
+            _ => Vt::Unsupported,
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn enable_vt(stream: &impl std::os::windows::io::AsRawHandle) -> Vt {
+        enable(&mut Win32(stream.as_raw_handle()))
+    }
+
+    #[cfg(not(windows))]
+    pub fn enable_vt<T>(_stream: &T) -> Vt {
+        Vt::NotConsole
+    }
+
+    #[cfg(windows)]
+    struct Win32(std::os::windows::io::RawHandle);
+
+    #[cfg(windows)]
+    impl Mode for Win32 {
+        fn get(&mut self) -> Option<u32> {
+            console_mode(self.0, None)
+        }
+        fn set(&mut self, mode: u32) -> bool {
+            console_mode(self.0, Some(mode)).is_some()
+        }
+    }
+
+    /// `GetConsoleMode` (`set` = `None`) or `SetConsoleMode`. `None`: the call failed (for
+    /// example, the handle is a pipe or a file). jetscan's only `unsafe` code.
+    #[cfg(windows)]
+    fn console_mode(handle: std::os::windows::io::RawHandle, set: Option<u32>) -> Option<u32> {
+        use std::os::windows::io::RawHandle;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetConsoleMode(console: RawHandle, mode: *mut u32) -> i32;
+            fn SetConsoleMode(console: RawHandle, mode: u32) -> i32;
+        }
+        // No standard handle (null) or INVALID_HANDLE_VALUE (-1): nothing to ask.
+        if handle.is_null() || handle.addr() == usize::MAX {
+            return None;
+        }
+        let mut mode = 0u32;
+        // SAFETY: both functions only read `handle`, a standard handle that std holds for the
+        // whole process (or a handle borrowed for this call); for a handle that is not a
+        // console Windows returns an error, it does not misbehave. `&mut mode` is a valid,
+        // aligned, writable u32 for the whole GetConsoleMode call, which writes only that.
+        let ok = unsafe {
+            match set {
+                None => GetConsoleMode(handle, &mut mode),
+                Some(m) => {
+                    mode = m;
+                    SetConsoleMode(handle, m)
+                }
+            }
+        };
+        (ok != 0).then_some(mode)
+    }
 }
 
 fn paint(on: bool, code: &str, s: &str) -> String {
@@ -38,6 +166,11 @@ fn paint(on: bool, code: &str, s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Whether stdout gets escape codes (a color terminal without `NO_COLOR`).
+pub fn colors() -> bool {
+    stdout_colors()
 }
 
 /// Heading or other emphasized text.
@@ -174,6 +307,83 @@ mod tests {
         let styled = paint(true, GREEN, "ok");
         assert_eq!(styled, "\x1b[32mok\x1b[0m");
         assert!(styled.ends_with(RESET));
+    }
+
+    /// A console whose mode reads and writes can be scripted to fail.
+    struct FakeConsole {
+        mode: Option<u32>,
+        accepts: bool,
+        /// Whether an accepted `set` really changes the mode (some old consoles do not).
+        sticks: bool,
+        sets: Vec<u32>,
+    }
+
+    impl console::Mode for FakeConsole {
+        fn get(&mut self) -> Option<u32> {
+            self.mode
+        }
+        fn set(&mut self, mode: u32) -> bool {
+            self.sets.push(mode);
+            if self.accepts && self.sticks {
+                self.mode = Some(mode);
+            }
+            self.accepts
+        }
+    }
+
+    fn fake(mode: Option<u32>, accepts: bool, sticks: bool) -> FakeConsole {
+        FakeConsole {
+            mode,
+            accepts,
+            sticks,
+            sets: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn console_mode_enables_escape_codes_and_keeps_other_bits() {
+        use console::{ENABLE_PROCESSED_OUTPUT as P, ENABLE_VIRTUAL_TERMINAL_PROCESSING as VT};
+        let mut c = fake(Some(0x0002), true, true);
+        assert_eq!(console::enable(&mut c), console::Vt::On);
+        assert_eq!(c.sets, vec![0x0002 | P | VT]);
+        // Again: already on, nothing is written.
+        assert_eq!(console::enable(&mut c), console::Vt::On);
+        assert_eq!(c.sets.len(), 1);
+    }
+
+    #[test]
+    fn console_mode_failures_turn_colors_off() {
+        // Old Windows: SetConsoleMode rejects the flag.
+        let mut refused = fake(Some(0x0003), false, false);
+        assert_eq!(console::enable(&mut refused), console::Vt::Unsupported);
+        // It reports success but the flag does not stick.
+        let mut ignored = fake(Some(0x0003), true, false);
+        assert_eq!(console::enable(&mut ignored), console::Vt::Unsupported);
+        // Not a console (a pipe or a file): nothing is set.
+        let mut pipe = fake(None, true, true);
+        assert_eq!(console::enable(&mut pipe), console::Vt::NotConsole);
+        assert!(pipe.sets.is_empty());
+
+        let on = || console::Vt::On;
+        assert!(colors_on(false, true, on));
+        assert!(!colors_on(false, true, || console::Vt::Unsupported));
+        assert!(!colors_on(true, true, on), "NO_COLOR");
+        assert!(!colors_on(false, false, on), "not a terminal");
+        // A terminal that is not a Windows console (mintty, Unix) keeps its colors.
+        assert!(colors_on(false, true, || console::Vt::NotConsole));
+        // The console is not touched for NO_COLOR or redirected output.
+        assert!(!colors_on(true, true, || panic!("asked the console")));
+        assert!(!colors_on(false, false, || panic!("asked the console")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_is_not_a_console() {
+        let path = std::env::temp_dir().join(format!("jetscan-ui-vt-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        assert_eq!(console::enable_vt(&file), console::Vt::NotConsole);
+        drop(file);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

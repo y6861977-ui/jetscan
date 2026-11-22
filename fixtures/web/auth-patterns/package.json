@@ -1,1 +1,0 @@
-{ "name": "jetscan-fixture-auth-patterns", "private": true, "dependencies": { "next": "15.5.8", "react": "19.0.0", "@upstash/workflow": "0.2.0" } }

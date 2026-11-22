@@ -1,8 +1,0 @@
-VITE_SUPABASE_URL=https://jetscanfixture.supabase.co
-VITE_SUPABASE_ANON_KEY=@@SUPABASE_ANON_JWT@@
-# POSITIVE line 4: privileged token format in a VITE_ variable (critical / potential)
-VITE_GITHUB_TOKEN=@@GITHUB_TOKEN@@
-# NEGATIVE: no VITE_ prefix, Vite does not expose it
-GITHUB_TOKEN=@@GITHUB_TOKEN@@
-# NEGATIVE: Vite does not expose NEXT_PUBLIC_ variables
-NEXT_PUBLIC_CLIENT_SECRET=@@DB_PASSWORD@@

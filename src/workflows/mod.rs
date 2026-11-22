@@ -29,3 +29,24 @@ pub fn check(root: &Path) -> Vec<Issue> {
     issues.sort_by(|a, b| (&a.path, a.line, a.id).cmp(&(&b.path, b.line, b.id)));
     issues
 }
+
+#[cfg(test)]
+mod guard_tests {
+    /// The `active` feature (ACTIVE website tests) is closed and local-only until a lawyer
+    /// reviews it: NO CI/release workflow may build it. This guard fails the build (in the
+    /// default feature set, so it always runs) if any of those workflows mentions `active`.
+    #[test]
+    fn active_feature_is_never_in_a_release_workflow() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for name in ["ci.yml", "release.yml", "pro-ci.yml", "pro-release.yml"] {
+            let path = root.join(".github").join("workflows").join(name);
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue; // not present in this checkout (e.g. the public export)
+            };
+            assert!(
+                !text.to_ascii_lowercase().contains("active"),
+                "{name} must not mention the `active` feature — it is local-only until legal review"
+            );
+        }
+    }
+}

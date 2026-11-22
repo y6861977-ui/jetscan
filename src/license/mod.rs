@@ -1,4 +1,4 @@
-//! Лицензия Teams: подписанный ключ, проверяется локально — без сети, без
+//! Лицензии jetscan: подписанный ключ, проверяется локально — без сети, без
 //! регистрации, без «звонка домой». Бесплатная часть ключа не требует никогда.
 //!
 //! Ключ: `JETSCAN-1.<base64url(текст)>.<base64url(подпись Ed25519)>`. Текст —
@@ -6,12 +6,34 @@
 //! ДО разбора: разбираем только то, что подписал доверенный издатель. Каждый
 //! издатель хранит свой приватный ключ; в сборке — только публичные ключи.
 //!
+//! Тарифы (`plan:`), решение владельца 2026-11-16:
+//! - `teams` — формат ключа не менялся ни на байт: старые ключи Teams проверяются
+//!   как прежде. Teams = CI-отчёты (`--sarif`, `--sbom`, `--baseline`) И все
+//!   Pro-сканы (тариф компании не слабее личного Pro). Льгота 14 дней.
+//! - `pro` — личный Pro на год: все Pro-сканы, без CI-отчётов. Льгота 14 дней.
+//! - `audit` — разовый аудит на 30 дней: все Pro-сканы. Без льготы.
+//! - `trial` — пробный: одна область (`area:` web|apk|android|ios), `scans:` штук,
+//!   короткий срок (сайт даёт 14 дней). Без льготы. Счётчик — локальный файл
+//!   (`entitlement.rs`).
+//!
+//! Новые поля (`area`, `scans`, `features`) идут ПОСЛЕ старых строк и только у
+//! новых тарифов; старый jetscan (≤ 0.3) их игнорирует и отвечает на незнакомый
+//! тариф «update jetscan». Личных данных в ключе нет: `org` у Pro/аудита/пробного —
+//! слово `personal`, почта в ключ не попадает никогда.
+//!
 //! Известные пределы модели на доверии (осознанно): перевод часов назад продлевает
 //! ключ; досрочно отозвать ключ нельзя (поэтому ключи — на год, не навсегда);
 //! код открыт, проверку можно вырезать. Компании платят за законную лицензию и
 //! поддержку, а не потому, что их заставили.
 
 pub mod ed25519;
+mod entitlement;
+
+pub use entitlement::{
+    Entitlement, ProFeature, describe, entitlement, entitlement_for, entitlement_in,
+    entitlement_of, print_status, record_trial_scan, record_trial_scan_in, trial_counter_file,
+    trial_used, trial_used_for, trial_used_in,
+};
 
 use std::path::PathBuf;
 
@@ -35,7 +57,127 @@ const PUBLIC_KEYS: &[[u8; 32]] = &[
 const PREFIX: &str = "JETSCAN-1.";
 const HEADER: &str = "jetscan-license 1";
 /// Сколько дней после срока платные функции ещё работают (оплата могла задержаться).
+/// Только у годовых тарифов (Teams, Pro); у аудита и пробного льготы нет.
 pub const GRACE_DAYS: i64 = 14;
+/// Предел `scans:` в ключе: защита от опечатки, не от издателя.
+const MAX_SCANS: u32 = 1000;
+
+/// Тариф ключа (`plan:`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plan {
+    Teams,
+    Pro,
+    Audit,
+    Trial,
+}
+
+impl Plan {
+    pub const ALL: [Plan; 4] = [Plan::Teams, Plan::Pro, Plan::Audit, Plan::Trial];
+
+    pub fn parse(s: &str) -> Option<Plan> {
+        Plan::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+
+    /// Как тариф записан в ключе.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Plan::Teams => "teams",
+            Plan::Pro => "pro",
+            Plan::Audit => "audit",
+            Plan::Trial => "trial",
+        }
+    }
+
+    /// Как тариф называется людям.
+    pub fn title(self) -> &'static str {
+        match self {
+            Plan::Teams => "jetscan Teams",
+            Plan::Pro => "jetscan Pro",
+            Plan::Audit => "jetscan one-time audit",
+            Plan::Trial => "jetscan Pro trial",
+        }
+    }
+
+    /// Льготные дни после срока: у годовых платных — 14, у разовых — ноль.
+    pub fn grace_days(self) -> i64 {
+        match self {
+            Plan::Teams | Plan::Pro => GRACE_DAYS,
+            Plan::Audit | Plan::Trial => 0,
+        }
+    }
+}
+
+/// Область пробного ключа (`area:`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Area {
+    Web,
+    Apk,
+    Android,
+    Ios,
+}
+
+impl Area {
+    pub const ALL: [Area; 4] = [Area::Web, Area::Apk, Area::Android, Area::Ios];
+
+    pub fn parse(s: &str) -> Option<Area> {
+        Area::ALL.into_iter().find(|a| a.as_str() == s)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Area::Web => "web",
+            Area::Apk => "apk",
+            Area::Android => "android",
+            Area::Ios => "ios",
+        }
+    }
+}
+
+/// Поля ключа сверх старого формата Teams. У ключа Teams старого формата —
+/// `plan: Teams`, остальное пусто.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Claims {
+    pub plan: Plan,
+    /// Только у пробного (и там обязательно).
+    pub area: Option<Area>,
+    /// Сколько сканов даёт ключ. Только у пробного (и там обязательно).
+    pub scans: Option<u32>,
+    /// Необязательное СУЖЕНИЕ тарифа: если есть, работает только перечисленное
+    /// (`web,apk,android,ios,url,ci`). Незнакомые слова пропускаются — сужение
+    /// не может открыть то, чего тариф не даёт.
+    pub features: Option<Vec<ProFeature>>,
+}
+
+impl Claims {
+    pub fn plan(plan: Plan) -> Claims {
+        Claims {
+            plan,
+            area: None,
+            scans: None,
+            features: None,
+        }
+    }
+
+    pub fn trial(area: Area, scans: u32) -> Claims {
+        Claims {
+            area: Some(area),
+            scans: Some(scans),
+            ..Claims::plan(Plan::Trial)
+        }
+    }
+
+    /// Согласованность полей. Те же правила при выпуске и при проверке.
+    fn validate(&self) -> Result<(), String> {
+        let trial = self.plan == Plan::Trial;
+        if trial != self.area.is_some() || trial != self.scans.is_some() {
+            return Err("malformed license".into());
+        }
+        if self.scans.is_some_and(|n| n == 0 || n > MAX_SCANS) {
+            return Err("license has a bad 'scans'".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct License {
@@ -172,7 +314,8 @@ pub fn today() -> i64 {
 
 // --- ключ ---
 
-/// Текст лицензии в каноническом виде (то, что подписывается).
+/// Текст лицензии в каноническом виде (то, что подписывается): старый формат
+/// Teams, байт в байт как до Pro. Новые поля добавляет `payload_with`.
 pub fn payload(l: &License) -> String {
     format!(
         "{HEADER}\nid: {}\norg: {}\nplan: {}\nseats: {}\nissued: {}\nexpires: {}\n",
@@ -185,9 +328,24 @@ pub fn payload(l: &License) -> String {
     )
 }
 
-/// Ключ из лицензии и 32-байтного секрета владельца.
-pub fn issue(l: &License, seed: &[u8; 32]) -> String {
-    let text = payload(l);
+/// Канонический текст с новыми полями — в фиксированном порядке ПОСЛЕ старых
+/// строк (`area`, `scans`, `features`). У Teams без сужения — ровно `payload(l)`.
+pub fn payload_with(l: &License, c: &Claims) -> String {
+    let mut text = payload(l);
+    if let Some(a) = c.area {
+        text.push_str(&format!("area: {}\n", a.as_str()));
+    }
+    if let Some(n) = c.scans {
+        text.push_str(&format!("scans: {n}\n"));
+    }
+    if let Some(f) = &c.features {
+        let list: Vec<&str> = f.iter().map(|f| f.token()).collect();
+        text.push_str(&format!("features: {}\n", list.join(",")));
+    }
+    text
+}
+
+fn sign_text(text: &str, seed: &[u8; 32]) -> String {
     let sig = ed25519::sign(seed, text.as_bytes());
     format!(
         "{PREFIX}{}.{}",
@@ -196,7 +354,35 @@ pub fn issue(l: &License, seed: &[u8; 32]) -> String {
     )
 }
 
-fn parse_payload(text: &str) -> Result<License, String> {
+/// Ключ Teams старого формата из лицензии и 32-байтного секрета издателя.
+pub fn issue(l: &License, seed: &[u8; 32]) -> String {
+    sign_text(&payload(l), seed)
+}
+
+/// Ключ любого тарифа. Отказ — если поля не согласованы или текст не пережил бы
+/// собственную проверку (перевод строки в организации и т.п.): битый ключ не
+/// должен уйти покупателю.
+pub fn issue_with(l: &License, c: &Claims, seed: &[u8; 32]) -> Result<String, String> {
+    if l.plan != c.plan.as_str() {
+        return Err(format!(
+            "plan '{}' does not match the claims ({})",
+            crate::ui::sanitize_line(&l.plan),
+            c.plan.as_str()
+        ));
+    }
+    c.validate()?;
+    if l.expires < l.issued {
+        return Err("the license expires before it is issued".into());
+    }
+    let text = payload_with(l, c);
+    match parse_payload(&text) {
+        Ok((back, claims)) if back == *l && claims == *c => Ok(sign_text(&text, seed)),
+        Ok(_) => Err("the license does not survive a round trip (check id and org)".into()),
+        Err(e) => Err(e),
+    }
+}
+
+fn parse_payload(text: &str) -> Result<(License, Claims), String> {
     let mut lines = text.lines();
     if lines.next() != Some(HEADER) {
         return Err("unknown license format".into());
@@ -220,7 +406,7 @@ fn parse_payload(text: &str) -> Result<License, String> {
         return Err("malformed license".into());
     }
     let date = |k: &str| parse_date(field(k)?).ok_or(format!("license has a bad '{k}' date"));
-    Ok(License {
+    let license = License {
         id: id.into(),
         org: org.into(),
         plan: plan.into(),
@@ -229,15 +415,71 @@ fn parse_payload(text: &str) -> Result<License, String> {
             .map_err(|_| "license has a bad 'seats'")?,
         issued: date("issued")?,
         expires: date("expires")?,
-    })
+    };
+    let Some(plan) = Plan::parse(plan) else {
+        return Err(format!(
+            "this jetscan version does not know the '{}' plan — update jetscan",
+            crate::ui::sanitize_line(plan)
+        ));
+    };
+    let area = match fields.get("area") {
+        None => None,
+        Some(a) => Some(Area::parse(a).ok_or(format!(
+            "this jetscan version does not know the trial area '{}' — update jetscan",
+            crate::ui::sanitize_line(a)
+        ))?),
+    };
+    let scans = match fields.get("scans") {
+        None => None,
+        // Только цифры: `+2` и ` 2` — не канонический текст.
+        Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+            Some(n.parse().map_err(|_| "license has a bad 'scans'")?)
+        }
+        Some(_) => return Err("license has a bad 'scans'".into()),
+    };
+    let features = fields.get("features").map(|list| {
+        list.split(',')
+            .filter_map(|t| ProFeature::ALL.into_iter().find(|f| f.token() == t))
+            .collect()
+    });
+    let claims = Claims {
+        plan,
+        area,
+        scans,
+        features,
+    };
+    claims.validate()?;
+    Ok((license, claims))
 }
 
-/// Проверка ключа любым из доверенных публичных ключей `keys` на дату `today`.
-pub fn check(key: &str, keys: &[[u8; 32]], today: i64) -> Status {
-    if keys.is_empty() {
-        return Status::Invalid("this jetscan build has no license key built in".into());
+/// Ключ проверен: состояние по сроку и, если подпись и текст приняты, его поля.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Checked {
+    pub status: Status,
+    /// `Some` — у `Active`/`Grace`/`Expired`; `None` — у `Free`/`Invalid`.
+    pub claims: Option<Claims>,
+}
+
+impl Checked {
+    pub fn free() -> Checked {
+        Checked {
+            status: Status::Free,
+            claims: None,
+        }
     }
-    let bad = || Status::Invalid("the license key is damaged or not a jetscan key".into());
+}
+
+/// Проверка ключа любого тарифа любым из доверенных публичных ключей `keys` на
+/// дату `today`. Льгота — по тарифу (`Plan::grace_days`).
+pub fn verify(key: &str, keys: &[[u8; 32]], today: i64) -> Checked {
+    let invalid = |reason: String| Checked {
+        status: Status::Invalid(reason),
+        claims: None,
+    };
+    if keys.is_empty() {
+        return invalid("this jetscan build has no license key built in".into());
+    }
+    let bad = || invalid("the license key is damaged or not a jetscan key".into());
     let Some((text, sig)) = key
         .trim()
         .strip_prefix(PREFIX)
@@ -252,29 +494,23 @@ pub fn check(key: &str, keys: &[[u8; 32]], today: i64) -> Status {
         return bad();
     };
     if !keys.iter().any(|pk| ed25519::verify(pk, &text, &sig)) {
-        return Status::Invalid("the license key signature is not valid".into());
+        return invalid("the license key signature is not valid".into());
     }
-    let license = match String::from_utf8(text)
+    let (license, claims) = match String::from_utf8(text)
         .map_err(|_| String::new())
         .and_then(|t| parse_payload(&t))
     {
-        Ok(l) => l,
+        Ok(parsed) => parsed,
         Err(e) if e.is_empty() => return bad(),
-        Err(e) => return Status::Invalid(e),
+        Err(e) => return invalid(e),
     };
-    if license.plan != "teams" {
-        return Status::Invalid(format!(
-            "this jetscan version does not know the '{}' plan — update jetscan",
-            crate::ui::sanitize_line(&license.plan)
-        ));
-    }
     let over = today - license.expires;
-    if over <= 0 {
+    let status = if over <= 0 {
         Status::Active {
             days_left: -over,
             license,
         }
-    } else if over <= GRACE_DAYS {
+    } else if over <= claims.plan.grace_days() {
         Status::Grace {
             days_over: over,
             license,
@@ -284,31 +520,68 @@ pub fn check(key: &str, keys: &[[u8; 32]], today: i64) -> Status {
             days_over: over,
             license,
         }
+    };
+    Checked {
+        status,
+        claims: Some(claims),
     }
+}
+
+/// Взгляд Teams (CI-отчёты `--sarif`/`--sbom`/`--baseline`): принят только ключ
+/// Teams. Ключ Pro/аудита/пробного здесь — `Invalid` с понятной причиной, так что
+/// код, который знает лишь `Status`, никогда не откроет CI-отчёты не тому тарифу.
+/// Pro-сканы решает `entitlement()`.
+pub fn check(key: &str, keys: &[[u8; 32]], today: i64) -> Status {
+    teams_view(verify(key, keys, today))
+}
+
+fn teams_view(checked: Checked) -> Status {
+    match checked.claims {
+        Some(c) if c.plan != Plan::Teams => Status::Invalid(format!(
+            "this is a {} key: it unlocks the Pro scans, not the jetscan Teams CI reports \
+             (--sarif, --sbom, --baseline)",
+            c.plan.title()
+        )),
+        _ => checked.status,
+    }
+}
+
+/// Папка jetscan: `JETSCAN_HOME` или `~/.jetscan`.
+pub fn jetscan_home() -> Option<PathBuf> {
+    if let Some(h) = std::env::var_os("JETSCAN_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(h));
+    }
+    crate::secrets::machine::home_dir().map(|h| h.join(".jetscan"))
 }
 
 /// Файл ключа: `JETSCAN_HOME/license` или `~/.jetscan/license`.
 pub fn license_file() -> Option<PathBuf> {
-    if let Some(h) = std::env::var_os("JETSCAN_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(h).join("license"));
-    }
-    crate::secrets::machine::home_dir().map(|h| h.join(".jetscan").join("license"))
+    jetscan_home().map(|h| h.join("license"))
 }
 
-/// Текущий статус: `JETSCAN_LICENSE` (для CI — секрет), иначе файл ключа.
-pub fn load() -> Status {
-    let key = std::env::var("JETSCAN_LICENSE")
+/// Текст ключа: `JETSCAN_LICENSE` (для CI — секрет), иначе файл ключа.
+fn read_key() -> Option<String> {
+    std::env::var("JETSCAN_LICENSE")
         .ok()
         .filter(|k| !k.trim().is_empty())
         .or_else(|| {
             license_file()
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .filter(|k| !k.trim().is_empty())
-        });
-    match key {
-        None => Status::Free,
-        Some(k) => check(&k, PUBLIC_KEYS, today()),
+        })
+}
+
+/// Ключ этой машины, любой тариф.
+pub fn load_checked() -> Checked {
+    match read_key() {
+        None => Checked::free(),
+        Some(k) => verify(&k, PUBLIC_KEYS, today()),
     }
+}
+
+/// Текущий статус во взгляде Teams (см. `check`).
+pub fn load() -> Status {
+    teams_view(load_checked())
 }
 
 #[cfg(test)]
@@ -484,6 +757,270 @@ mod tests {
             good.replace(HEADER, "jetscan-license 2"),
         ] {
             assert!(!check(&sign(&text), &[pk], today).paid(), "{text}");
+        }
+    }
+
+    // --- Pro / audit / trial (2026-11-16) ---
+
+    /// Throwaway test secret (32 × 0x2a) — the same one the site's tests use.
+    const FIXTURE_SEED: [u8; 32] = [0x2a; 32];
+    const FIXTURE_PUBKEY: &str = "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61";
+    /// Byte-for-byte cross-check with the website's key issuer: its API tests hold the
+    /// same strings and its signer must produce them. The Teams one is the original
+    /// reference key of the site contract, from before Pro existed.
+    const FIXTURES: [(&str, &str); 4] = [
+        (
+            "teams",
+            "JETSCAN-1.amV0c2Nhbi1saWNlbnNlIDEKaWQ6IEpTLTAwMDEKb3JnOiBBY21lIEx0ZApwbGFuOiB0ZWFtcwpzZWF0czogMjAKaXNzdWVkOiAyMDI2LTEwLTI5CmV4cGlyZXM6IDIwMjctMTAtMjkK.W4C5bn_xT-yENxqw4GN2yaKvQTjstN8bXk6cYeccjmq46fRGHs5Ot6GlmMe3rDGI_8-Ib06_pEeKf9ELGphTBQ",
+        ),
+        (
+            "pro",
+            "JETSCAN-1.amV0c2Nhbi1saWNlbnNlIDEKaWQ6IEpQLTAwMDEKb3JnOiBwZXJzb25hbApwbGFuOiBwcm8Kc2VhdHM6IDEKaXNzdWVkOiAyMDI2LTExLTE2CmV4cGlyZXM6IDIwMjctMTEtMTYK.uTUJHtYdim7Q_G-cidpHw70XLXlM6FvKc0ZheHtZ1KSPCG0tOO2JSeqjN7UC8V8GIwm-E6hS4duWCSUianmHDw",
+        ),
+        (
+            "audit",
+            "JETSCAN-1.amV0c2Nhbi1saWNlbnNlIDEKaWQ6IEpBLTAwMDEKb3JnOiBwZXJzb25hbApwbGFuOiBhdWRpdApzZWF0czogMQppc3N1ZWQ6IDIwMjYtMTEtMTYKZXhwaXJlczogMjAyNi0xMi0xNgo.N8tW2ofM5jDJZKse3sInIftV4UF3FCbem7yj6ZCbmlczdL4V68ClwbRDGn52FA6fMbvSszyeSVNds8UlS3z6BA",
+        ),
+        (
+            "trial",
+            "JETSCAN-1.amV0c2Nhbi1saWNlbnNlIDEKaWQ6IEpULTAwMDEKb3JnOiBwZXJzb25hbApwbGFuOiB0cmlhbApzZWF0czogMQppc3N1ZWQ6IDIwMjYtMTEtMTYKZXhwaXJlczogMjAyNi0xMS0zMAphcmVhOiBhcGsKc2NhbnM6IDIK.OA82X5R9NXObtuQKsMxa9iKLsdmE9l3HKc7S04_c16vl_rSQs-8fYlXSdcfDDhE1lwbTVVwZQi5NJ01S7fUJDw",
+        ),
+    ];
+
+    fn fixture(plan: &str) -> (License, Claims) {
+        let d = |s| parse_date(s).unwrap();
+        let personal = |id: &str, plan: Plan, expires| License {
+            id: id.into(),
+            org: "personal".into(),
+            plan: plan.as_str().into(),
+            seats: 1,
+            issued: d("2026-11-16"),
+            expires: d(expires),
+        };
+        match plan {
+            "teams" => (
+                License {
+                    id: "JS-0001".into(),
+                    org: "Acme Ltd".into(),
+                    plan: "teams".into(),
+                    seats: 20,
+                    issued: d("2026-10-29"),
+                    expires: d("2027-10-29"),
+                },
+                Claims::plan(Plan::Teams),
+            ),
+            "pro" => (
+                personal("JP-0001", Plan::Pro, "2027-11-16"),
+                Claims::plan(Plan::Pro),
+            ),
+            "audit" => (
+                personal("JA-0001", Plan::Audit, "2026-12-16"),
+                Claims::plan(Plan::Audit),
+            ),
+            _ => (
+                personal("JT-0001", Plan::Trial, "2026-11-30"),
+                Claims::trial(Area::Apk, 2),
+            ),
+        }
+    }
+
+    #[test]
+    fn site_cross_check_fixtures_verify_and_are_reproduced_exactly() {
+        let pk = ed25519::public_key(&FIXTURE_SEED);
+        assert_eq!(crate::hash::hex(&pk), FIXTURE_PUBKEY);
+        let today = parse_date("2026-11-20").unwrap();
+        for (plan, key) in FIXTURES {
+            let (l, c) = fixture(plan);
+            assert_eq!(
+                issue_with(&l, &c, &FIXTURE_SEED).as_deref(),
+                Ok(key),
+                "{plan}"
+            );
+            let checked = verify(key, &[pk], today);
+            assert!(
+                matches!(checked.status, Status::Active { ref license, .. } if *license == l),
+                "{plan}: {checked:?}"
+            );
+            assert_eq!(checked.claims, Some(c), "{plan}");
+        }
+        // The legacy issuer and the new one agree on Teams, byte for byte.
+        let (l, _) = fixture("teams");
+        assert_eq!(issue(&l, &FIXTURE_SEED), FIXTURES[0].1);
+    }
+
+    #[test]
+    fn an_old_format_teams_key_keeps_todays_semantics() {
+        // Built by hand exactly as jetscan ≤ 0.3 and the site wrote it — not via payload().
+        let text = "jetscan-license 1\nid: JS-20261101-abcdef\norg: Old Co\nplan: teams\n\
+                    seats: 20\nissued: 2026-11-01\nexpires: 2027-11-01\n";
+        let sig = ed25519::sign(&SEED, text.as_bytes());
+        let key = format!(
+            "{PREFIX}{}.{}",
+            b64_encode(text.as_bytes()),
+            b64_encode(&sig)
+        );
+        let pk = ed25519::public_key(&SEED);
+        let day = |s| parse_date(s).unwrap();
+        let checked = verify(&key, &[pk], day("2027-06-01"));
+        assert_eq!(checked.claims, Some(Claims::plan(Plan::Teams)));
+        assert!(check(&key, &[pk], day("2027-06-01")).paid());
+        assert!(matches!(
+            check(&key, &[pk], day("2027-11-15")),
+            Status::Grace { days_over: 14, .. }
+        ));
+        assert!(matches!(
+            check(&key, &[pk], day("2027-11-16")),
+            Status::Expired { .. }
+        ));
+        // Unknown extra lines were always ignored; that stays (forward compatibility).
+        let newer = format!("{text}color: blue\n");
+        let sig = ed25519::sign(&SEED, newer.as_bytes());
+        let newer = format!(
+            "{PREFIX}{}.{}",
+            b64_encode(newer.as_bytes()),
+            b64_encode(&sig)
+        );
+        assert!(check(&newer, &[pk], day("2027-06-01")).paid());
+    }
+
+    #[test]
+    fn the_teams_view_never_opens_ci_reports_to_other_plans() {
+        let pk = ed25519::public_key(&FIXTURE_SEED);
+        let today = parse_date("2026-11-20").unwrap();
+        for (plan, key) in &FIXTURES[1..] {
+            match check(key, &[pk], today) {
+                Status::Invalid(reason) => {
+                    assert!(
+                        reason.contains("not the jetscan Teams CI reports"),
+                        "{plan}"
+                    )
+                }
+                other => panic!("{plan}: {other:?}"),
+            }
+            assert!(verify(key, &[pk], today).status.paid(), "{plan}");
+        }
+    }
+
+    #[test]
+    fn grace_is_only_for_yearly_plans() {
+        let pk = ed25519::public_key(&FIXTURE_SEED);
+        let day = |s| parse_date(s).unwrap();
+        let state = |i: usize, today| verify(FIXTURES[i].1, &[pk], day(today)).status;
+        assert!(matches!(
+            state(1, "2027-11-30"),
+            Status::Grace { days_over: 14, .. }
+        ));
+        assert!(matches!(state(1, "2027-12-01"), Status::Expired { .. }));
+        assert!(matches!(state(2, "2026-12-16"), Status::Active { .. }));
+        assert!(matches!(
+            state(2, "2026-12-17"),
+            Status::Expired { days_over: 1, .. }
+        ));
+        assert!(matches!(state(3, "2026-11-30"), Status::Active { .. }));
+        assert!(matches!(state(3, "2026-12-01"), Status::Expired { .. }));
+    }
+
+    #[test]
+    fn tampering_with_new_fields_breaks_the_signature() {
+        let pk = ed25519::public_key(&FIXTURE_SEED);
+        let today = parse_date("2026-11-20").unwrap();
+        let key = FIXTURES[3].1;
+        let (text, sig) = key[PREFIX.len()..].split_once('.').unwrap();
+        let text = String::from_utf8(b64_decode(text).unwrap()).unwrap();
+        for edited in [
+            text.replace("area: apk", "area: web"),
+            text.replace("scans: 2", "scans: 200"),
+            text.replace("plan: trial", "plan: pro"),
+            text.replace("scans: 2\n", ""),
+        ] {
+            let forged = format!("{PREFIX}{}.{sig}", b64_encode(edited.as_bytes()));
+            assert_eq!(
+                verify(&forged, &[pk], today).status,
+                Status::Invalid("the license key signature is not valid".into())
+            );
+        }
+    }
+
+    #[test]
+    fn signed_but_inconsistent_new_fields_are_rejected() {
+        let pk = ed25519::public_key(&SEED);
+        let today = parse_date("2026-11-20").unwrap();
+        let sign = |text: &str| {
+            let sig = ed25519::sign(&SEED, text.as_bytes());
+            format!(
+                "{PREFIX}{}.{}",
+                b64_encode(text.as_bytes()),
+                b64_encode(&sig)
+            )
+        };
+        let base = |plan: &str| {
+            format!(
+                "{HEADER}\nid: JX-1\norg: personal\nplan: {plan}\nseats: 1\n\
+                 issued: 2026-11-16\nexpires: 2026-11-30\n"
+            )
+        };
+        let trial = format!("{}area: web\nscans: 2\n", base("trial"));
+        assert!(verify(&sign(&trial), &[pk], today).status.paid());
+        for (text, why) in [
+            (base("trial"), "malformed"),
+            (format!("{}area: web\n", base("trial")), "malformed"),
+            (format!("{}scans: 2\n", base("trial")), "malformed"),
+            (format!("{}area: web\n", base("pro")), "malformed"),
+            (format!("{}scans: 5\n", base("audit")), "malformed"),
+            (
+                trial.replace("area: web", "area: desktop"),
+                "update jetscan",
+            ),
+            (trial.replace("scans: 2", "scans: 0"), "'scans'"),
+            (trial.replace("scans: 2", "scans: +2"), "'scans'"),
+            (trial.replace("scans: 2", "scans: 1001"), "'scans'"),
+            (trial.replace("scans: 2", "scans: 99999999999"), "'scans'"),
+            (format!("{trial}area: apk\n"), "malformed"),
+            (base("enterprise"), "update jetscan"),
+        ] {
+            match verify(&sign(&text), &[pk], today).status {
+                Status::Invalid(reason) => assert!(reason.contains(why), "{reason} / {text}"),
+                other => panic!("{text}: {other:?}"),
+            }
+        }
+        // Unknown feature words are skipped: a narrowing list can never widen a plan.
+        let narrowed = format!("{}features: web,warp-drive\n", base("pro"));
+        let checked = verify(&sign(&narrowed), &[pk], today);
+        assert_eq!(
+            checked.claims.unwrap().features,
+            Some(vec![ProFeature::WebSource])
+        );
+    }
+
+    #[test]
+    fn issue_with_refuses_keys_that_would_not_verify() {
+        let ok = fixture("trial");
+        assert!(issue_with(&ok.0, &ok.1, &SEED).is_ok());
+        let mut mismatch = ok.0.clone();
+        mismatch.plan = "pro".into();
+        let mut newline = fixture("pro").0;
+        newline.org = "Evil\nplan: teams".into();
+        let mut backwards = fixture("audit").0;
+        backwards.expires = backwards.issued - 1;
+        let pro_with_area = Claims {
+            area: Some(Area::Web),
+            ..Claims::plan(Plan::Pro)
+        };
+        for (l, c) in [
+            (mismatch, ok.1.clone()),
+            (newline, Claims::plan(Plan::Pro)),
+            (backwards, Claims::plan(Plan::Audit)),
+            (fixture("pro").0, pro_with_area),
+            (ok.0.clone(), Claims::trial(Area::Web, 0)),
+            (
+                ok.0.clone(),
+                Claims {
+                    scans: None,
+                    ..Claims::trial(Area::Web, 2)
+                },
+            ),
+        ] {
+            assert!(issue_with(&l, &c, &SEED).is_err(), "{l:?} {c:?}");
         }
     }
 }

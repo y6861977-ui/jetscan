@@ -1,1 +1,0 @@
-{ "name": "jetscan-fixture-xss-patterns", "private": true, "dependencies": { "next": "15.0.3", "react": "19.0.0", "sanitize-html": "2.13.0", "shiki": "1.22.0" } }

@@ -11,8 +11,9 @@ JetScan finds problems. Resolve helps you fix them, but on your terms:
 - after an edit it re-runs the same check and says what it saw, finding by
   finding. It never says "your project is secure".
 
-Everything else (leaked keys, dependency upgrades, `permissions: write-all`,
-web, APK, Android and iOS findings) gets clear advice, not an automatic edit.
+Everything else (leaked keys, dependency upgrades, `permissions: write-all`, and
+the website and mobile app findings of jetscan Pro) gets clear advice, not an automatic
+edit.
 
 ## The flow
 

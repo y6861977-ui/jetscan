@@ -2,31 +2,44 @@ use jetscan::baseline::{Baseline, Hidden};
 use jetscan::deps::Severity;
 use jetscan::license::{self, Status};
 use jetscan::secrets::{machine, report, scan};
-use jetscan::{
-    apk_audit, combined, deps, finding_v2, hook, html, hygiene, sarif, sbom, ui, web_audit,
-};
+use jetscan::{combined, deps, edition, hook, html, hygiene, sarif, sbom, ui};
 use std::path::{Path, PathBuf};
 
 mod mcp;
 mod menu;
+#[cfg(feature = "pro")]
+mod pro;
 
-const USAGE: &str = "\
+const USAGE_COMMANDS: &str = "\
 usage: jetscan scan [path] [options]      secrets + vulnerable dependencies + GitHub Actions
        jetscan secrets [path] [options]   leaked secrets only (fully offline)
        jetscan deps [path] [options]      vulnerable dependencies only
        jetscan machine [options]          secrets on this whole machine (+ --deps)
        jetscan hook install|uninstall     git pre-commit hook: block commits with secrets
-       jetscan license                    show the jetscan Teams license status
-       jetscan menu                       numbered menu, no commands to type (also: no arguments)
+       jetscan license                    show the license key: plan, expiry, what it unlocks
+       jetscan menu                       numbered menu, no commands to type (also: no arguments);
+                                          its \"jetscan console\" item takes jetscan commands
        jetscan mcp                        MCP server on stdio for AI coding tools (see `jetscan mcp --help`)
 
 Alpha (rules may change; see `<command> --help`):
+       jetscan resolve plan [path]        fix plan -> preview -> apply --confirm -> verify";
+
+/// The jetscan Pro commands, listed only by the Pro build.
+#[cfg(feature = "pro")]
+const USAGE_PRO: &str = "
+jetscan Pro (alpha; see `<command> --help`):
        jetscan web source [path]          Next.js / Vite React source audit
        jetscan apk <file.apk>             Android APK static audit (nothing is run)
        jetscan android [path]             Android source project audit (Gradle, Kotlin/Java)
        jetscan ios [path]                 iOS source project audit (Xcode, Swift/Objective-C)
-       jetscan resolve plan [path]        fix plan -> preview -> apply --confirm -> verify
+       jetscan url <https://site>         passive check of a published website (browser-like GETs)";
 
+/// The free build points to jetscan Pro in one line.
+#[cfg(not(feature = "pro"))]
+const USAGE_PRO: &str = "
+jetscan Pro adds website source, live website (URL), APK, Android and iOS app audits: https://jetscan.jet.kim";
+
+const USAGE_DETAILS: &str = "
 Secrets: API keys, tokens, private keys, .env passwords in files and git history.
 `machine` also checks plaintext credential stores (~/.git-credentials, ~/.npmrc,
 ~/.aws/credentials...), SSH keys without a passphrase, shell history and every git
@@ -75,6 +88,8 @@ no account, no network. Everything else is free.
 Cache: ~/.jetscan/osv-cache (24 h). Proxy: HTTPS_PROXY.";
 
 fn main() {
+    // Before any output: a Windows console renders colors only after this (else none).
+    ui::init_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::process::exit(jetscan_main(&args));
 }
@@ -98,11 +113,11 @@ fn jetscan_main(args: &[String]) -> i32 {
             return 2;
         }
         None | Some("-h") | Some("--help") => {
-            println!("jetscan {}\n\n{USAGE}", env!("CARGO_PKG_VERSION"));
+            println!("jetscan {}\n\n{}", edition::version(), usage());
             return 0;
         }
         Some("-V") | Some("--version") => {
-            println!("jetscan {}", env!("CARGO_PKG_VERSION"));
+            println!("jetscan {}", edition::version());
             return 0;
         }
         Some("scan") => Cmd::Scan,
@@ -111,22 +126,27 @@ fn jetscan_main(args: &[String]) -> i32 {
         Some("machine") => Cmd::Machine,
         Some("hook") => return run_hook(&args[1..]),
         Some("license") if args.len() == 1 => return run_license(),
+        Some("license") if matches!(args[1].as_str(), "--help" | "-h" | "help") => {
+            println!(
+                "usage: jetscan license\n\nShows the license key on this machine: plan, expiry, what it \
+                 unlocks and trial scans left.\nThe key itself is never printed. Put a key in \
+                 JETSCAN_LICENSE or ~/.jetscan/license.\nGet one at https://jetscan.jet.kim"
+            );
+            return 0;
+        }
         // MCP server over stdio for AI coding tools (src/mcp/).
         Some("mcp") => return mcp::run(&args[1..]),
-        // Web Source Audit alpha: not in USAGE until the Pro gate (roadmap M4) is decided.
-        // `--json-v2`: strict shared Findings V2 JSON (src/finding_v2/cli.rs).
-        Some("web") if wants_json_v2(args) => return finding_v2::cli::run_web(&args[1..]),
-        Some("web") => return web_audit::cli::run(&args[1..]),
-        // APK Static Audit alpha: hidden from USAGE for the same reason as `web`.
-        Some("apk") if wants_json_v2(args) => return finding_v2::cli::run_apk(&args[1..]),
-        Some("apk") => return apk_audit::cli::run(&args[1..]),
-        // Android source audit alpha (Gradle project folder).
-        Some("android") if wants_json_v2(args) => return finding_v2::cli::run_android(&args[1..]),
-        Some("android") => return jetscan::android_audit::cli::run(&args[1..]),
-        // iOS source audit alpha (Xcode project folder).
-        Some("ios") if wants_json_v2(args) => return finding_v2::cli::run_ios(&args[1..]),
-        Some("ios") => return jetscan::ios_audit::cli::run(&args[1..]),
-        // Free Resolve (plan / preview / apply --confirm / verify): hidden from USAGE until released.
+        // jetscan Pro (alpha): web source, apk, android, ios, url. Each scan goes through the
+        // license gate in src/pro.rs (private source).
+        #[cfg(feature = "pro")]
+        Some(cmd) if pro::is_pro(cmd) => return pro::run(cmd, &args[1..]),
+        // The free build: a Pro command says where it comes from instead of "unknown command".
+        #[cfg(not(feature = "pro"))]
+        Some(other) if edition::pro_only(other).is_some() => {
+            ui::eprint_error(&edition::pro_only(other).unwrap_or_default());
+            return 2;
+        }
+        // Free Resolve (plan / preview / apply --confirm / verify).
         Some("resolve") => return jetscan::resolve::cli::run(&args[1..]),
         Some(other) => {
             ui::eprint_error(&format!("unknown command '{}'", ui::sanitize_line(other)));
@@ -137,7 +157,7 @@ fn jetscan_main(args: &[String]) -> i32 {
     let a = match parse(cmd, &args[1..]) {
         Ok(Some(a)) => a,
         Ok(None) => {
-            println!("{USAGE}");
+            println!("{}", usage());
             return 0;
         }
         Err(e) => {
@@ -378,64 +398,15 @@ fn teams(flag: &str, status: &Status) -> Result<(), String> {
     }
 }
 
-/// `web`/`apk`/`android`/`ios` alpha: V2 JSON goes through finding_v2's redacted export.
-fn wants_json_v2(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--json-v2")
+/// The full `--help` text of this build.
+fn usage() -> String {
+    format!("{USAGE_COMMANDS}\n{USAGE_PRO}\n{USAGE_DETAILS}")
 }
 
-/// `jetscan license`: какой ключ стоит. Сам ключ не печатается никогда.
+/// `jetscan license`: the plan, expiry, what the key unlocks and (trial) the scans left.
+/// The key itself is never printed. Exit 2 if a key is present but not accepted.
 fn run_license() -> i32 {
-    let status = license::load();
-    let show = |l: &license::License, state: String| {
-        println!(
-            "jetscan Teams — {} · {} · {} · issued {}\n{state}",
-            ui::sanitize_line(&l.org),
-            ui::plural(l.seats as usize, "seat", "seats"),
-            ui::sanitize_line(&l.id),
-            license::format_date(l.issued)
-        )
-    };
-    match &status {
-        Status::Free => {
-            println!("jetscan Free — no license key (JETSCAN_LICENSE or ~/.jetscan/license).");
-            println!("Every scan is free; --sarif, --sbom and --baseline need jetscan Teams.");
-            println!("Teams: https://jetscan.jet.kim");
-        }
-        Status::Active {
-            license: l,
-            days_left,
-        } => show(
-            l,
-            ui::green(&format!(
-                "✓ valid until {} ({} left)",
-                license::format_date(l.expires),
-                ui::plural(*days_left as usize, "day", "days")
-            )),
-        ),
-        Status::Grace {
-            license: l,
-            days_over,
-        } => show(
-            l,
-            ui::yellow(&format!(
-                "! expired on {}; paid features stop in {}",
-                license::format_date(l.expires),
-                ui::plural((license::GRACE_DAYS - days_over) as usize, "day", "days")
-            )),
-        ),
-        Status::Expired { license: l, .. } => show(
-            l,
-            ui::red(&format!(
-                "✗ expired on {} — paid features are off, free scans keep working",
-                license::format_date(l.expires)
-            )),
-        ),
-        Status::Invalid(reason) => {
-            ui::eprint_error(&format!("license key not accepted: {reason}"));
-            return 2;
-        }
-    }
-    0
+    license::print_status()
 }
 
 fn fail(e: &str) -> i32 {
@@ -679,10 +650,16 @@ fn run_machine(a: Args) -> i32 {
 }
 
 /// The interactive menu: every action runs through `jetscan_main`, exactly as typed.
+fn menu_input() -> std::io::BufReader<std::io::Stdin> {
+    // Not `stdin().lock()` for the whole menu: a command run from the console that reads a
+    // line itself (`url active` asks for the consent sentence) would wait for that lock forever.
+    // Do not prefetch later lines: nested commands read from the same stdin.
+    std::io::BufReader::with_capacity(1, std::io::stdin())
+}
+
 fn run_menu() -> i32 {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
+    let mut input = menu_input();
     let mut out = std::io::stdout();
     menu::run(
         &mut input,
@@ -754,6 +731,61 @@ fn run_hook(args: &[String]) -> i32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn menu_command_does_not_prefetch_nested_stdin() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        const CHILD: &str = "JETSCAN_TEST_SHARED_INPUT";
+        if std::env::var_os(CHILD).is_some() {
+            let mut output = Vec::new();
+            let mut reads = 0;
+            let code = menu::run(
+                &mut menu_input(),
+                &mut output,
+                std::path::Path::new("."),
+                &std::env::temp_dir(),
+                &mut |args| {
+                    assert_eq!(args, &["secrets", "."]);
+                    let mut answer = String::new();
+                    std::io::stdin().read_line(&mut answer).unwrap();
+                    assert_eq!(answer.trim(), "nested answer");
+                    reads += 1;
+                    0
+                },
+                &mut menu::System,
+            );
+            assert_eq!((code, reads), (0, 1));
+            assert!(String::from_utf8(output).unwrap().contains("  done"));
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::menu_command_does_not_prefetch_nested_stdin",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"12\nsecrets .\nnested answer\nexit\n0\n")
+            .unwrap();
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     fn args(cmd: Cmd, list: &[&str]) -> Args {
         let list: Vec<String> = list.iter().map(|s| s.to_string()).collect();
         parse(cmd, &list).unwrap().unwrap()
@@ -823,6 +855,37 @@ mod tests {
         ] {
             let e = teams("--sarif", &closed).unwrap_err();
             assert!(e.contains("--sarif"), "{e}");
+        }
+    }
+
+    #[test]
+    fn ci_flags_stay_teams_only_for_every_plan() {
+        // Throwaway signing secret (the license tests' fixture), never a real key.
+        let seed = [0x2a; 32];
+        let pk = license::ed25519::public_key(&seed);
+        let today = license::today();
+        let key = |claims: license::Claims| {
+            let teams = claims.plan == license::Plan::Teams;
+            let l = license::License {
+                id: format!("J-{}", claims.plan.as_str()),
+                org: if teams { "Acme" } else { "personal" }.into(),
+                plan: claims.plan.as_str().into(),
+                seats: if teams { 20 } else { 1 },
+                issued: today - 10,
+                expires: today + 10,
+            };
+            license::issue_with(&l, &claims, &seed).unwrap()
+        };
+        let teams_key = key(license::Claims::plan(license::Plan::Teams));
+        assert!(teams("--sarif", &license::check(&teams_key, &[pk], today)).is_ok());
+        for claims in [
+            license::Claims::plan(license::Plan::Pro),
+            license::Claims::plan(license::Plan::Audit),
+            license::Claims::trial(license::Area::Web, 2),
+        ] {
+            let status = license::check(&key(claims), &[pk], today);
+            let e = teams("--baseline", &status).unwrap_err();
+            assert!(e.contains("not the jetscan Teams CI reports"), "{e}");
         }
     }
 }

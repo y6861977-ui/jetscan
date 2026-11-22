@@ -1,5 +1,0 @@
-{
-  "name": "jetscan-fixture-next-routes",
-  "private": true,
-  "dependencies": { "next": "15.0.3", "react": "19.0.0", "react-dom": "19.0.0", "cors": "2.8.5" }
-}

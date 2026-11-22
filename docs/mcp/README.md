@@ -18,10 +18,10 @@ same files give the same answer every time.
 | `scan_dependencies` | Lockfile versions with known advisories or malicious-package reports (OSV.dev) | **off by default**; `offline: false` sends package names + versions to api.osv.dev | Free |
 | `scan_github_actions` | Script injection, `pull_request_target` checking out PR code, unpinned actions, `write-all` permissions | none | Free |
 | `resolve_plan` | A fix plan and diff preview for workflow findings. **Never changes files** | none | Free |
-| `audit_web_source` | Next.js / Vite React source audit | none | Pro |
-| `audit_apk` | Android APK static audit (nothing is installed or run) | none | Pro |
-| `audit_android_source` | Android app source project audit: Gradle, Kotlin/Java, XML (nothing is built or run) | none | Pro |
-| `audit_ios_source` | iOS app source project audit: Xcode project, Swift/Objective-C, plists (nothing is built or run) | none | Pro |
+
+jetscan Pro, a separate closed-source build, adds website source, APK, Android and iOS
+source audits and a passive live-website check as more tools; see [jetscan Pro](#jetscan-pro)
+below.
 
 Every tool is read-only, and none of them applies a fix. `resolve_plan` returns a diff,
 and the AI is told to show it to you. Applying it is your call. You can run it yourself:
@@ -64,7 +64,7 @@ when that is the workspace. Pass a project folder instead.
 ## Install jetscan first
 
 Put `jetscan` (or `jetscan.exe`) on your `PATH`, or use its full path as the `command`
-in the configs below. Check it with `jetscan mcp --help`. `jetscan menu`, item 10, prints
+in the configs below. Check it with `jetscan mcp --help`. `jetscan menu`, item 6, prints
 the Claude Code command and the Cursor / VS Code configs with the full path of that
 jetscan filled in.
 
@@ -202,23 +202,15 @@ Windsurf docs and was not confirmed against the current docs.
 Sources: <https://docs.devin.ai/desktop/cascade/mcp> and
 <https://docs.devin.ai/cli/extensibility/mcp/configuration.md> (read 2026-11-13).
 
-## Pro tools and the license key
+## jetscan Pro
 
-`audit_web_source`, `audit_apk`, `audit_android_source` and `audit_ios_source` are part of
-jetscan Pro. For now
-a valid jetscan Teams key also unlocks them, including in its 14-day grace period after the
-expiry date (the same rule as the CLI's Teams flags). In the CLI, `jetscan web source`,
-`jetscan apk`, `jetscan android` and `jetscan ios` are free while they are alpha. Without a key they do **not** scan. They return a
-short, normal message for the AI to relay: what the check does, where to get a key
-(<https://jetscan.jet.kim>) and how to install it.
-
-- Save the key as one line in `~/.jetscan/license`. It is read on every call, so no
-  restart is needed.
-- Or set `JETSCAN_LICENSE` in the environment of the AI tool that starts
-  `jetscan mcp`, then restart the server. For example, Claude Code takes
-  `claude mcp add -e JETSCAN_LICENSE=... jetscan -- jetscan mcp`.
-
-The key is checked on your machine and is never printed or sent.
+The four tools above are everything this build has, and they need no key. jetscan Pro is
+a separate, closed-source build (not in this repository) that adds website source, APK,
+Android and iOS source audits and a passive live-website check as MCP tools. They need a
+jetscan Pro, one-time audit or Teams key, or a free trial for one audit, from
+<https://jetscan.jet.kim>; without one a tool returns a short notice instead of scanning. A
+trial scan made through the AI counts like one typed in the terminal. Its setup is the same
+as above.
 
 ## Troubleshooting
 

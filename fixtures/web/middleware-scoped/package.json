@@ -1,1 +1,0 @@
-{ "name": "jetscan-fixture-middleware-scoped", "private": true, "dependencies": { "next": "13.3.2", "next-auth": "4.24.0", "react": "18.3.1" } }

@@ -1,12 +1,21 @@
 [package]
 name = "jetscan"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Local, private, deterministic security scanner for developers"
 license = "Elastic-2.0"
 
 # Ноль внешних зависимостей — часть бренда и безопасности. Не добавлять.
 [dependencies]
+
+# `pro`: the closed-source jetscan Pro build (website, APK, Android, iOS audits). Off by
+# default; the public source tree builds and tests without it. Pro adds no dependencies.
+#
+# `active`: an additional opt-in build of some Pro checks; implies `pro`. Its source is not
+# part of the public tree and no CI/release workflow builds it.
+[features]
+pro = []
+active = ["pro"]
 
 # Релизная сборка: один маленький самодостаточный файл.
 [profile.release]

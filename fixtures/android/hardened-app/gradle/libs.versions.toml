@@ -1,7 +1,0 @@
-[versions]
-minSdk = "26"
-targetSdk = "34"
-compileSdk = "34"
-
-[plugins]
-android-application = { id = "com.android.application", version = "8.5.0" }

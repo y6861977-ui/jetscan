@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// jetscan Pro: the Pro tools over MCP (tests/mcp/pro.rs, private repository only).
+#[cfg(feature = "pro")]
+#[path = "mcp/pro.rs"]
+mod pro;
+
 struct Temp(PathBuf);
 
 impl Temp {
@@ -42,7 +47,7 @@ fn token() -> String {
     format!("{}{}", "ghp_", "Zq8".repeat(12))
 }
 
-/// A project with a fake token, a vulnerable workflow, a lockfile and a Next.js file.
+/// A project with a fake token, a vulnerable workflow, a lockfile and a React page.
 fn project(t: &Temp) -> PathBuf {
     let p = t.0.join("project");
     fs::create_dir_all(p.join(".github/workflows")).unwrap();
@@ -180,11 +185,9 @@ fn error_code(msgs: &[Json], id: Option<u32>) -> f64 {
 }
 
 #[test]
-fn legacy_session_runs_every_free_tool_and_gates_the_paid_ones() {
+fn legacy_session_runs_every_free_tool() {
     let t = Temp::new("legacy");
     let p = project(&t);
-    let apk = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/apk/demo/demo.apk");
-    fs::copy(&apk, p.join("demo.apk")).unwrap();
     let lines = vec![
         init("2025-11-25", "{}"),
         INITIALIZED.to_string(),
@@ -193,17 +196,13 @@ fn legacy_session_runs_every_free_tool_and_gates_the_paid_ones() {
         call(3, "scan_dependencies", "{}"),
         call(4, "scan_github_actions", "{}"),
         call(5, "resolve_plan", "{}"),
-        call(6, "audit_web_source", "{}"),
-        call(7, "audit_apk", r#"{"file":"demo.apk"}"#),
-        call(8, "audit_android_source", "{}"),
-        call(9, "audit_ios_source", "{}"),
         r#"{"jsonrpc":"2.0","id":10,"method":"ping"}"#.to_string(),
     ];
     let before = fs::read(p.join(".github/workflows/triage.yml")).unwrap();
     let (code, msgs, stdout, stderr) = session(&p, &[], &lines, &[]);
     assert_eq!(code, 0, "{stderr}");
     // Every request answered, the notification not.
-    assert_eq!(msgs.len(), 11, "{stdout}");
+    assert_eq!(msgs.len(), 7, "{stdout}");
     assert!(!stdout.contains(&token()), "raw secret in MCP output");
 
     let init = reply(&msgs, 0).get("result").unwrap();
@@ -227,18 +226,16 @@ fn legacy_session_runs_every_free_tool_and_gates_the_paid_ones() {
         .map(|t| t.get("name").and_then(Json::as_str).unwrap())
         .collect();
     assert_eq!(
-        names,
+        names[..4],
         [
             "scan_secrets",
             "scan_dependencies",
             "scan_github_actions",
             "resolve_plan",
-            "audit_web_source",
-            "audit_apk",
-            "audit_android_source",
-            "audit_ios_source"
         ]
     );
+    // The free build has no other tools; jetscan Pro lists its own after these (mcp/pro.rs).
+    assert_eq!(names.len(), if cfg!(feature = "pro") { 9 } else { 4 });
 
     let (err, text, structured) = tool(&msgs, 2);
     assert!(!err && !structured, "{text}");
@@ -272,28 +269,6 @@ fn legacy_session_runs_every_free_tool_and_gates_the_paid_ones() {
     );
     assert!(!p.join("jetscan-plan.json").exists());
 
-    for (id, name) in [
-        (6, "audit_web_source"),
-        (7, "audit_apk"),
-        (8, "audit_android_source"),
-        (9, "audit_ios_source"),
-    ] {
-        let (err, text, structured) = tool(&msgs, id);
-        assert!(!err && !structured, "{text}");
-        assert!(
-            text.starts_with(&format!("{name} was not run: it is part of jetscan Pro")),
-            "{text}"
-        );
-        assert!(text.contains("https://jetscan.jet.kim"));
-        // Not scanned: no findings, no V2 document.
-        assert!(
-            !text.contains("schema_version")
-                && !text.contains("WEB-")
-                && !text.contains("APK-")
-                && !text.contains("ANDROID-")
-                && !text.contains("IOS-")
-        );
-    }
     assert_eq!(
         reply(&msgs, 10).get("result"),
         Some(&Json::Obj(Default::default()))
@@ -461,24 +436,6 @@ fn client_roots_narrow_the_workspace_and_root_flag_wins() {
         text.contains("config.js") && !text.contains("page.tsx"),
         "{text}"
     );
-}
-
-#[test]
-fn an_invalid_license_key_is_never_echoed() {
-    let t = Temp::new("license");
-    let p = project(&t);
-    let key = format!("JETSCAN-1.{}.{}", "bm90LWEta2V5", "c2lnbmF0dXJl");
-    let (code, msgs, stdout, stderr) = session(
-        &p,
-        &[],
-        &[init("2025-11-25", "{}"), call(1, "audit_web_source", "{}")],
-        &[("JETSCAN_LICENSE", &key)],
-    );
-    assert_eq!(code, 0);
-    let (err, text, _) = tool(&msgs, 1);
-    assert!(!err);
-    assert!(text.contains("was not accepted"), "{text}");
-    assert!(!stdout.contains(&key) && !stderr.contains(&key));
 }
 
 #[test]

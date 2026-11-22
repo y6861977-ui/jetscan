@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="jetscan">
+  <!-- One colour, one path: the tile with the prompt and cursor cut out (even-odd). -->
+  <path fill="#142029" fill-rule="evenodd" d="M14 0H50A14 14 0 0 1 64 14V50A14 14 0 0 1 50 64H14A14 14 0 0 1 0 50V14A14 14 0 0 1 14 0Z
+    M20.988 17.753L33.988 29.253A3 3 0 0 1 33.988 33.747L20.988 45.247A3 3 0 0 1 17.012 40.753L27.472 31.5L17.012 22.247A3 3 0 0 1 20.988 17.753Z
+    M38.5 40H46.5A2.5 2.5 0 0 1 49 42.5V43.5A2.5 2.5 0 0 1 46.5 46H38.5A2.5 2.5 0 0 1 36 43.5V42.5A2.5 2.5 0 0 1 38.5 40Z"/>
+</svg>

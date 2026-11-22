@@ -3,7 +3,8 @@
 //! Every tool is read-only: nothing in the workspace is written, no command from the
 //! project is run, and there is deliberately NO tool that applies a fix — applying is a
 //! human step (`jetscan resolve apply <plan> --confirm`) or an edit the AI makes itself
-//! after the user agrees. Paid checks run only when `entitled` says so.
+//! after the user agrees. The jetscan Pro tools (`tools/pro.rs`) exist only in the Pro
+//! build, and run only when `pro::entitled` (`license::entitlement_in`) says so.
 
 use super::report::{self, Notes, Report};
 use super::workspace::{Kind, Workspace, plain};
@@ -11,28 +12,32 @@ use jetscan::deps::osv::{Http, OsvOptions, real_sleep};
 use jetscan::deps::scan::NoNetwork;
 use jetscan::finding_v2::{ModelError, RedactionPolicy, RemediationState, adapters};
 use jetscan::json::Json;
-use jetscan::license::{self, Status};
+use jetscan::license::Checked;
 use jetscan::secrets::scan::ScanOptions;
-use jetscan::{
-    android_audit, apk_audit, deps, ios_audit, resolve, secrets, ui, web_audit, workflows,
-};
+use jetscan::{deps, resolve, secrets, ui, workflows};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub const SITE: &str = "https://jetscan.jet.kim";
+#[cfg(feature = "pro")]
+mod pro;
 
 /// What a tool call needs from the server. Injected so tests can fake the license
 /// and the network.
 pub struct Env<'a> {
     pub ws: &'a Workspace,
-    pub license: &'a dyn Fn() -> Status,
+    /// Read only by the jetscan Pro tools (src/mcp/tools/pro.rs).
+    #[cfg_attr(not(feature = "pro"), allow(dead_code))]
+    pub license: &'a dyn Fn() -> Checked,
     /// Used only by `scan_dependencies` with `offline: false`.
     pub http: &'a dyn Http,
     pub osv_cache: Option<PathBuf>,
+    /// The jetscan Pro trial counter folder (`~/.jetscan`; a temporary folder in tests).
+    #[cfg_attr(not(feature = "pro"), allow(dead_code))]
+    pub trial_dir: Option<PathBuf>,
 }
 
 /// One `tools/call` result. `is_error` = the tool could not do its job (bad input,
-/// refused path, scanner error); a paywall notice is NOT an error.
+/// refused path, scanner error); a Pro paywall notice is NOT an error.
 pub struct ToolResult {
     pub texts: Vec<String>,
     pub is_error: bool,
@@ -45,113 +50,12 @@ impl ToolResult {
             is_error: true,
         }
     }
-    fn notice(text: String) -> ToolResult {
-        ToolResult {
-            texts: vec![text],
-            is_error: false,
-        }
-    }
     fn report(r: Report) -> ToolResult {
         ToolResult {
             texts: vec![r.summary, r.json_text],
             is_error: false,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Licensing
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Feature {
-    Web,
-    Apk,
-    Android,
-    Ios,
-}
-
-impl Feature {
-    fn tool(self) -> &'static str {
-        match self {
-            Feature::Web => "audit_web_source",
-            Feature::Apk => "audit_apk",
-            Feature::Android => "audit_android_source",
-            Feature::Ios => "audit_ios_source",
-        }
-    }
-    fn what(self) -> &'static str {
-        match self {
-            Feature::Web => {
-                "a static audit of Next.js / Vite React source code: privileged keys in \
-                 client code or public env variables (NEXT_PUBLIC_*, VITE_*), a Supabase \
-                 service-role key in the browser, state-changing server handlers without a \
-                 visible access check, non-constant HTML in DOM sinks, CORS that lets any site \
-                 send credentials, public source maps"
-            }
-            Feature::Apk => {
-                "a static audit of an Android APK file (nothing is installed or run): \
-                 manifest flags such as debuggable, exported components and cleartext \
-                 traffic, backup settings, permissions, and keys embedded in resources \
-                 and DEX code"
-            }
-            Feature::Android => {
-                "a static audit of an Android app's source project (Gradle, Kotlin/Java, XML; \
-                 nothing is built or run): exported components, debuggable/backup/cleartext \
-                 settings, R8 off in release, signing passwords and keystores in the project, \
-                 provider keys in code and buildConfigField, trust-all TLS, risky WebView \
-                 bridges, weak ciphers, secrets in logs"
-            }
-            Feature::Ios => {
-                "a static audit of an iOS app's source project (Xcode project, Swift/Objective-C, \
-                 plists; nothing is built or run): App Transport Security exceptions, get-task-allow \
-                 in release entitlements, provider keys and signing files in the repository, tokens \
-                 in UserDefaults, Keychain items readable while locked, trust-all URLSession \
-                 handlers, UIWebView and file:// web views, weak ciphers, secrets in logs"
-            }
-        }
-    }
-}
-
-/// The single place that decides whether a paid check may run. Today any valid,
-/// unexpired jetscan Teams key unlocks every Pro check; a future Pro key (another
-/// `plan` accepted by `license::check`) slots in here, per feature if needed.
-pub fn entitled(feature: Feature, status: &Status) -> bool {
-    match feature {
-        // Same as the CLI's Teams flags: the 14-day grace period still unlocks.
-        Feature::Web | Feature::Apk | Feature::Android | Feature::Ios => {
-            matches!(status, Status::Active { .. } | Status::Grace { .. })
-        }
-    }
-}
-
-/// The paywall notice, relayed by the AI. Never prints the key, only its state.
-fn paywall(feature: Feature, status: &Status) -> String {
-    let state = match status {
-        Status::Free => "No jetscan license key was found on this machine.".to_string(),
-        Status::Grace { license: l, .. } | Status::Expired { license: l, .. } => format!(
-            "The jetscan license key on this machine expired on {}.",
-            license::format_date(l.expires)
-        ),
-        Status::Invalid(reason) => format!(
-            "The jetscan license key on this machine was not accepted: {}.",
-            ui::sanitize_line(reason)
-        ),
-        Status::Active { .. } => "This license does not include this check.".to_string(),
-    };
-    format!(
-        "{tool} was not run: it is part of jetscan Pro.\n\
-         What it does: {what}.\n\
-         {state}\n\
-         To enable it: get a key at {SITE}, then save it as one line in ~/.jetscan/license \
-         (read on every call, no restart needed) or set JETSCAN_LICENSE in the environment \
-         that starts `jetscan mcp` (restart the server). The key is checked on this machine; \
-         nothing is sent anywhere. A jetscan Teams key also unlocks it.\n\
-         Free tools that work without a key: scan_secrets, scan_dependencies, \
-         scan_github_actions, resolve_plan.",
-        tool = feature.tool(),
-        what = feature.what(),
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -249,74 +153,29 @@ a terminal, or you make the same edit yourself only after the user agrees.",
         required: &[],
         open_world: false,
     },
-    Def {
-        name: "audit_web_source",
-        title: "Audit Next.js / Vite React source (jetscan Pro)",
-        description: "jetscan Pro. Static, offline audit of a Next.js or Vite React project's \
-source: privileged keys in client code or public env variables, a Supabase service-role key in \
-the browser, state-changing route handlers / server actions without a visible access check \
-(needs review), non-constant HTML in DOM sinks, CORS with credentials for any origin, public \
-source maps. Findings carry \
-file, line, confidence and a masked excerpt; an unsupported framework is reported as not \
-checked. Read-only. Without a jetscan Pro or Teams license it does not scan and returns a short \
-notice on how to get one — relay that notice to the user as is.",
-        params: &[("path", "string", PATH_HELP)],
-        required: &[],
-        open_world: false,
-    },
-    Def {
-        name: "audit_apk",
-        title: "Audit an Android APK (jetscan Pro)",
-        description: "jetscan Pro. Static, offline audit of an Android .apk file inside the \
-workspace — nothing is installed or run: debuggable and backup flags, exported components, \
-cleartext traffic and network security config, dangerous permissions, keys embedded in \
-resources and DEX code. Read-only. Without a jetscan Pro or Teams license it does not scan and \
-returns a short notice on how to get one — relay that notice to the user as is.",
-        params: &[(
-            "file",
-            "string",
-            "The .apk file, relative to the workspace folder or absolute inside it.",
-        )],
-        required: &["file"],
-        open_world: false,
-    },
-    Def {
-        name: "audit_android_source",
-        title: "Audit an Android app's source project (jetscan Pro)",
-        description: "jetscan Pro. Static, offline audit of an Android Gradle project's source \
-inside the workspace — nothing is built or run: exported components and manifest flags (with \
-release/flavor manifests merged), debuggable or unminified release builds, signing passwords and \
-keystore files in the project, provider keys in code, resources and buildConfigField, trust-all \
-TrustManager/HostnameVerifier, WebView JavaScript bridges, weak ciphers, secrets in logs. Findings \
-carry file, line, column, confidence and a masked excerpt; Gradle values that are not literals are \
-reported as not fully checked. Read-only. Without a jetscan Pro or Teams license it does not scan \
-and returns a short notice on how to get one — relay that notice to the user as is.",
-        params: &[("path", "string", PATH_HELP)],
-        required: &[],
-        open_world: false,
-    },
-    Def {
-        name: "audit_ios_source",
-        title: "Audit an iOS app's source project (jetscan Pro)",
-        description: "jetscan Pro. Static, offline audit of an iOS app's source project inside the \
-workspace — nothing is built or run: App Transport Security in Info.plist, custom URL schemes, \
-get-task-allow and wildcard domains in entitlements (per Xcode build configuration), provider keys in \
-code, plists and xcconfig, signing files (.p12, AuthKey_*.p8) by name only, tokens in UserDefaults, \
-kSecAttrAccessibleAlways, trust-all URLSession challenge handlers, UIWebView and file:// access, weak \
-ciphers, secrets in logs and on the pasteboard. Findings carry file, line, column, confidence and a \
-masked excerpt; build settings that are not literals are reported as not fully checked. Read-only. \
-Without a jetscan Pro or Teams license it does not scan and returns a short notice on how to get \
-one — relay that notice to the user as is.",
-        params: &[("path", "string", PATH_HELP)],
-        required: &[],
-        open_world: false,
-    },
 ];
+
+/// The free tools, then (Pro build) the Pro tools.
+fn defs() -> impl Iterator<Item = &'static Def> {
+    #[cfg(feature = "pro")]
+    let pro = pro::DEFS;
+    #[cfg(not(feature = "pro"))]
+    let pro: &[Def] = &[];
+    DEFS.iter().chain(pro)
+}
+
+/// What the server instructions and `jetscan mcp --help` add for the Pro tools.
+pub fn pro_notes() -> (&'static str, &'static str) {
+    #[cfg(feature = "pro")]
+    return (pro::INSTRUCTIONS, pro::TOOLS);
+    #[cfg(not(feature = "pro"))]
+    ("", "")
+}
 
 /// `tools/list`: the tools in a fixed order.
 pub fn list() -> Json {
     Json::Arr(
-        DEFS.iter()
+        defs()
             .map(|d| {
                 let props = Json::Obj(
                     d.params
@@ -362,7 +221,7 @@ pub fn list() -> Json {
 }
 
 pub fn known(name: &str) -> bool {
-    DEFS.iter().any(|d| d.name == name)
+    defs().any(|d| d.name == name)
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +286,7 @@ impl<'a> Args<'a> {
 
 /// `None`: no such tool (a protocol error for the caller).
 pub fn call(name: &str, raw_args: &Json, env: &Env<'_>) -> Option<ToolResult> {
-    let def = DEFS.iter().find(|d| d.name == name)?;
+    let def = defs().find(|d| d.name == name)?;
     let args = match Args::new(def, raw_args) {
         Ok(a) => a,
         Err(e) => return Some(ToolResult::error(format!("{name}: {e}"))),
@@ -437,10 +296,10 @@ pub fn call(name: &str, raw_args: &Json, env: &Env<'_>) -> Option<ToolResult> {
         "scan_dependencies" => scan_dependencies(&args, env),
         "scan_github_actions" => scan_github_actions(&args, env),
         "resolve_plan" => resolve_plan(&args, env),
-        "audit_web_source" => audit_web(&args, env),
-        "audit_android_source" => audit_android(&args, env),
-        "audit_ios_source" => audit_ios(&args, env),
-        _ => audit_apk(&args, env),
+        #[cfg(feature = "pro")]
+        other => pro::call(other, &args, env)?,
+        #[cfg(not(feature = "pro"))]
+        _ => return None,
     };
     Some(result.unwrap_or_else(|e| ToolResult::error(format!("{name}: {e}"))))
 }
@@ -689,78 +548,14 @@ fn resolve_plan(a: &Args<'_>, env: &Env<'_>) -> Outcome {
     })
 }
 
-fn audit_web(a: &Args<'_>, env: &Env<'_>) -> Outcome {
-    let status = (env.license)();
-    if !entitled(Feature::Web, &status) {
-        return Ok(ToolResult::notice(paywall(Feature::Web, &status)));
-    }
-    let dir = env.ws.resolve(a.str("path"), Kind::Dir)?;
-    let r = web_audit::scan_source(&plain(&dir), &web_audit::WebScanOptions::default())
-        .map_err(|e| ui::sanitize_line(&e))?;
-    let scan = adapters::web(&r).map_err(v2_err)?;
-    let target = env.ws.relative(&dir);
-    let cli = format!("jetscan web source {target}");
-    report::render("audit_web_source", &target, &cli, scan, &Notes::default())
-        .map(ToolResult::report)
-}
-
-fn audit_apk(a: &Args<'_>, env: &Env<'_>) -> Outcome {
-    let status = (env.license)();
-    if !entitled(Feature::Apk, &status) {
-        return Ok(ToolResult::notice(paywall(Feature::Apk, &status)));
-    }
-    let file = env.ws.resolve(a.str("file"), Kind::File)?;
-    let r = apk_audit::scan_apk(&plain(&file), &apk_audit::ApkScanOptions::default())
-        .map_err(|e| ui::sanitize_line(&e))?;
-    let scan = adapters::apk(&r).map_err(v2_err)?;
-    let target = env.ws.relative(&file);
-    let cli = format!("jetscan apk {target}");
-    report::render("audit_apk", &target, &cli, scan, &Notes::default()).map(ToolResult::report)
-}
-
-fn audit_android(a: &Args<'_>, env: &Env<'_>) -> Outcome {
-    let status = (env.license)();
-    if !entitled(Feature::Android, &status) {
-        return Ok(ToolResult::notice(paywall(Feature::Android, &status)));
-    }
-    let dir = env.ws.resolve(a.str("path"), Kind::Dir)?;
-    let r = android_audit::scan_source(&plain(&dir), &android_audit::AndroidScanOptions::default())
-        .map_err(|e| ui::sanitize_line(&e))?;
-    let scan = adapters::android(&r).map_err(v2_err)?;
-    let target = env.ws.relative(&dir);
-    let cli = format!("jetscan android {target}");
-    report::render(
-        "audit_android_source",
-        &target,
-        &cli,
-        scan,
-        &Notes::default(),
-    )
-    .map(ToolResult::report)
-}
-
-fn audit_ios(a: &Args<'_>, env: &Env<'_>) -> Outcome {
-    let status = (env.license)();
-    if !entitled(Feature::Ios, &status) {
-        return Ok(ToolResult::notice(paywall(Feature::Ios, &status)));
-    }
-    let dir = env.ws.resolve(a.str("path"), Kind::Dir)?;
-    let r = ios_audit::scan_source(&plain(&dir), &ios_audit::IosScanOptions::default())
-        .map_err(|e| ui::sanitize_line(&e))?;
-    let scan = adapters::ios(&r).map_err(v2_err)?;
-    let target = env.ws.relative(&dir);
-    let cli = format!("jetscan ios {target}");
-    report::render("audit_ios_source", &target, &cli, scan, &Notes::default())
-        .map(ToolResult::report)
-}
-
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use jetscan::json;
+    use jetscan::license;
     use std::path::Path;
 
-    fn lic(expires_in: i64) -> license::License {
+    pub(crate) fn lic(expires_in: i64) -> license::License {
         let today = license::today();
         license::License {
             id: "JS-TEST".into(),
@@ -773,46 +568,10 @@ mod tests {
     }
 
     #[test]
-    fn active_or_grace_license_is_entitled() {
-        for f in [Feature::Web, Feature::Apk, Feature::Android, Feature::Ios] {
-            assert!(entitled(
-                f,
-                &Status::Active {
-                    license: lic(100),
-                    days_left: 100
-                }
-            ));
-            assert!(entitled(
-                f,
-                &Status::Grace {
-                    license: lic(-3),
-                    days_over: 3,
-                }
-            ));
-            for closed in [
-                Status::Free,
-                Status::Expired {
-                    license: lic(-30),
-                    days_over: 30,
-                },
-                Status::Invalid("bad".into()),
-            ] {
-                assert!(!entitled(f, &closed));
-                let text = paywall(f, &closed);
-                assert!(
-                    text.contains("jetscan Pro") && text.contains(SITE),
-                    "{text}"
-                );
-                assert!(text.contains("~/.jetscan/license") && text.contains("JETSCAN_LICENSE"));
-            }
-        }
-    }
-
-    #[test]
     fn definitions_are_read_only_and_valid() {
         let list = list();
         let tools = list.as_array().unwrap();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), if cfg!(feature = "pro") { 9 } else { 4 });
         for t in tools {
             let name = t.get("name").and_then(Json::as_str).unwrap();
             assert!(name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
@@ -838,9 +597,9 @@ mod tests {
         assert!(!names.iter().any(|n| n.contains("apply")));
     }
 
-    struct Temp(PathBuf);
+    pub(crate) struct Temp(pub(crate) PathBuf);
     impl Temp {
-        fn new(tag: &str) -> Temp {
+        pub(crate) fn new(tag: &str) -> Temp {
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -885,20 +644,44 @@ mod tests {
         }
     }
 
-    fn env_call(
+    /// A Teams key in its active period (the shape every plan's `Checked` has).
+    pub(crate) fn teams_active() -> Checked {
+        Checked {
+            status: license::Status::Active {
+                license: lic(100),
+                days_left: 100,
+            },
+            claims: Some(license::Claims::plan(license::Plan::Teams)),
+        }
+    }
+
+    pub(crate) fn env_call(
         root: &Path,
-        status: Status,
+        checked: Checked,
         name: &str,
         args: &str,
         cache: Option<PathBuf>,
     ) -> ToolResult {
+        env_call_in(root, checked, name, args, cache, None)
+    }
+
+    /// `env_call` with a trial counter folder.
+    pub(crate) fn env_call_in(
+        root: &Path,
+        checked: Checked,
+        name: &str,
+        args: &str,
+        cache: Option<PathBuf>,
+        trial_dir: Option<PathBuf>,
+    ) -> ToolResult {
         let ws = Workspace::new(&[], root).unwrap();
-        let status_fn = move || status.clone();
+        let checked_fn = move || checked.clone();
         let env = Env {
             ws: &ws,
-            license: &status_fn,
+            license: &checked_fn,
             http: &FakeOsv,
             osv_cache: cache,
+            trial_dir,
         };
         call(name, &json::parse(args).unwrap(), &env).unwrap()
     }
@@ -915,7 +698,7 @@ mod tests {
         let cache = t.0.join("cache");
         let offline = env_call(
             &t.0,
-            Status::Free,
+            Checked::free(),
             "scan_dependencies",
             "{}",
             Some(cache.clone()),
@@ -932,7 +715,7 @@ mod tests {
 
         let online = env_call(
             &t.0,
-            Status::Free,
+            Checked::free(),
             "scan_dependencies",
             r#"{"offline":false}"#,
             Some(cache),
@@ -950,175 +733,16 @@ mod tests {
     }
 
     #[test]
-    fn paid_tools_scan_with_an_active_license() {
-        let demo = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/apk/demo");
-        let active = Status::Active {
-            license: lic(100),
-            days_left: 100,
-        };
-        let r = env_call(&demo, active, "audit_apk", r#"{"file":"demo.apk"}"#, None);
-        assert!(!r.is_error, "{}", r.texts[0]);
-        assert!(r.texts[0].contains("4 findings"), "{}", r.texts[0]);
-        assert!(r.texts[0].contains("APK-DEBUG-002"), "{}", r.texts[0]);
-        let free = env_call(
-            &demo,
-            Status::Free,
-            "audit_apk",
-            r#"{"file":"demo.apk"}"#,
-            None,
-        );
-        assert!(!free.is_error);
-        assert_eq!(free.texts.len(), 1);
-        assert!(free.texts[0].starts_with("audit_apk was not run"));
-    }
-
-    #[test]
-    fn android_source_audit_is_gated_and_scans_with_a_license() {
-        let t = Temp::new("android");
-        let app = t.0.join("app");
-        std::fs::create_dir_all(app.join("src/main")).unwrap();
-        std::fs::write(t.0.join("settings.gradle"), "include ':app'\n").unwrap();
-        std::fs::write(
-            app.join("build.gradle"),
-            "apply plugin: 'com.android.application'\nandroid {\n  defaultConfig { minSdkVersion 24\n    targetSdkVersion 34 }\n  buildTypes { release { debuggable true\n    minifyEnabled true } }\n}\n",
-        )
-        .unwrap();
-        std::fs::write(
-            app.join("src/main/AndroidManifest.xml"),
-            "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"com.example.t\"><application android:allowBackup=\"false\"/></manifest>\n",
-        )
-        .unwrap();
-        for closed in [
-            Status::Free,
-            Status::Expired {
-                license: lic(-30),
-                days_over: 30,
-            },
-        ] {
-            let r = env_call(&t.0, closed, "audit_android_source", "{}", None);
-            assert!(!r.is_error);
-            assert_eq!(r.texts.len(), 1, "notice only, no scan");
-            assert!(
-                r.texts[0].starts_with("audit_android_source was not run"),
-                "{}",
-                r.texts[0]
-            );
-            assert!(!r.texts[0].contains("ANDROID-"), "{}", r.texts[0]);
-        }
-        for open in [
-            Status::Active {
-                license: lic(100),
-                days_left: 100,
-            },
-            Status::Grace {
-                license: lic(-3),
-                days_over: 3,
-            },
-        ] {
-            let r = env_call(&t.0, open, "audit_android_source", r#"{"path":"."}"#, None);
-            assert!(!r.is_error, "{}", r.texts[0]);
-            assert!(r.texts[0].contains("ANDROID-DEBUG-002"), "{}", r.texts[0]);
-            assert!(r.texts[0].contains("app/build.gradle"), "{}", r.texts[0]);
-            assert!(r.texts[0].contains("Network: none"), "{}", r.texts[0]);
-            assert!(
-                r.texts[1].contains("\"schema_version\":2"),
-                "{}",
-                r.texts[1]
-            );
-            assert!(r.texts[1].contains("android/android-debug-002/"));
-        }
-        let active = Status::Active {
-            license: lic(100),
-            days_left: 100,
-        };
-        let r = env_call(
-            &t.0,
-            active,
-            "audit_android_source",
-            r#"{"path":"../.."}"#,
-            None,
-        );
-        assert!(r.is_error, "outside the workspace: {}", r.texts[0]);
-    }
-
-    #[test]
-    fn ios_source_audit_is_gated_and_scans_with_a_license() {
-        let t = Temp::new("ios");
-        std::fs::create_dir_all(t.0.join("App")).unwrap();
-        std::fs::write(t.0.join("App/App.swift"), "import UIKit\n").unwrap();
-        std::fs::write(
-            t.0.join("App/Info.plist"),
-            "<?xml version=\"1.0\"?>\n<plist version=\"1.0\">\n<dict>\n  <key>NSAppTransportSecurity</key>\n  <dict>\n    <key>NSAllowsArbitraryLoads</key>\n    <true/>\n  </dict>\n</dict>\n</plist>\n",
-        )
-        .unwrap();
-        for closed in [
-            Status::Free,
-            Status::Expired {
-                license: lic(-30),
-                days_over: 30,
-            },
-        ] {
-            let r = env_call(&t.0, closed, "audit_ios_source", "{}", None);
-            assert!(!r.is_error);
-            assert_eq!(r.texts.len(), 1, "notice only, no scan");
-            assert!(
-                r.texts[0].starts_with("audit_ios_source was not run"),
-                "{}",
-                r.texts[0]
-            );
-            assert!(!r.texts[0].contains("IOS-"), "{}", r.texts[0]);
-        }
-        for open in [
-            Status::Active {
-                license: lic(100),
-                days_left: 100,
-            },
-            Status::Grace {
-                license: lic(-3),
-                days_over: 3,
-            },
-        ] {
-            let r = env_call(&t.0, open, "audit_ios_source", r#"{"path":"."}"#, None);
-            assert!(!r.is_error, "{}", r.texts[0]);
-            assert!(r.texts[0].contains("IOS-ATS-001"), "{}", r.texts[0]);
-            assert!(r.texts[0].contains("App/Info.plist"), "{}", r.texts[0]);
-            assert!(r.texts[0].contains("Network: none"), "{}", r.texts[0]);
-            assert!(
-                r.texts[1].contains("\"schema_version\":2"),
-                "{}",
-                r.texts[1]
-            );
-            assert!(r.texts[1].contains("ios/ios-ats-001/"));
-        }
-        let active = Status::Active {
-            license: lic(100),
-            days_left: 100,
-        };
-        let r = env_call(
-            &t.0,
-            active,
-            "audit_ios_source",
-            r#"{"path":"../.."}"#,
-            None,
-        );
-        assert!(r.is_error, "outside the workspace: {}", r.texts[0]);
-    }
-
-    #[test]
     fn bad_arguments_are_tool_errors() {
         let t = Temp::new("args");
         for (name, args) in [
             ("scan_secrets", r#"{"paht":"."}"#),
             ("scan_secrets", r#"{"history":"yes"}"#),
             ("scan_secrets", r#"[1]"#),
-            ("audit_apk", r#"{}"#),
             ("scan_github_actions", r#"{"path":"../.."}"#),
         ] {
-            let active = Status::Active {
-                license: lic(100),
-                days_left: 100,
-            };
-            let r = env_call(&t.0, active, name, args, None);
+            let r = env_call(&t.0, teams_active(), name, args, None);
+
             assert!(r.is_error, "{name} {args}: {}", r.texts[0]);
         }
     }

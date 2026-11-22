@@ -4,14 +4,15 @@ Copyright (c) 2026 Yusup
 jetscan is licensed under the Elastic License 2.0 (see LICENSE). In short: anyone
 may read, use, copy and modify it for free; you may not offer it as a hosted
 service, and you may not remove or get around the license key check that
-protects the jetscan Teams features (--sarif, --sbom, --baseline).
+protects the jetscan Teams features (--sarif, --sbom, --baseline) or jetscan Pro.
 
 Parts that come from the author's earlier project jet were published under the
 MIT license and remain available under it as well: src/json.rs, src/ui.rs, the
 SHA-256 code in src/hash.rs, and the OSV client in src/deps/osv.rs.
 
-src/apk_audit/inflate.rs is an altered version of puff.c, a reference inflate
-(RFC 1951) decoder, ported from C to Rust for jetscan. The original is
-Copyright (C) 2002-2013 Mark Adler and is distributed under the zlib license;
-the original copyright notice and license text are kept verbatim in the header
-of src/apk_audit/inflate.rs. This port is not the original software.
+jetscan Pro, the separate closed-source build, includes src/apk_audit/inflate.rs,
+an altered version of puff.c, a reference inflate (RFC 1951) decoder, ported from
+C to Rust for jetscan. The original is Copyright (C) 2002-2013 Mark Adler and is
+distributed under the zlib license; the original copyright notice and license
+text are kept verbatim in the header of that file. This port is not the original
+software. The file is part of the jetscan Pro source only.

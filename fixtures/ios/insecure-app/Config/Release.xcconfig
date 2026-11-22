@@ -1,5 +1,0 @@
-// Release build settings
-#include "Shared.xcconfig"
-SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) RELEASE
-API_BASE_URL = https:/$()/api.example.com
-ANALYTICS_CLIENT_SECRET = @@PASSWORD@@

@@ -1,5 +1,0 @@
-// Release build settings: secrets come from CI, never from this file
-#include? "Secrets.xcconfig"
-SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) RELEASE
-CLIENT_SECRET = $(CI_CLIENT_SECRET)
-API_KEY_HEADER = X-Api-Key

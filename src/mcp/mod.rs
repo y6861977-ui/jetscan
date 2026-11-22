@@ -21,7 +21,7 @@ mod workspace;
 
 use jetscan::deps::osv::{self, Curl, Http};
 use jetscan::json::{self, Json};
-use jetscan::license::{self, Status};
+use jetscan::license::{self, Checked};
 use jetscan::ui;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -51,8 +51,7 @@ const INSTRUCTIONS: &str = "jetscan runs local, deterministic security checks on
 of this workspace. Every tool is read-only. scan_secrets, scan_github_actions and resolve_plan \
 are offline; scan_dependencies is offline unless called with offline: false. Results never \
 contain secret values. resolve_plan never changes files: show its diff to the user, who applies \
-it. audit_web_source, audit_apk, audit_android_source and audit_ios_source need a jetscan Pro \
-license; without one they return a short notice to relay to the user.";
+it.";
 
 pub const USAGE: &str = "\
 usage: jetscan mcp [--root <folder>]...
@@ -65,8 +64,17 @@ reports (MCP roots), else the current folder. Logs go to stderr.
   Others:       see docs/mcp/README.md
 
 Tools: scan_secrets, scan_dependencies (offline unless offline:false), scan_github_actions,
-resolve_plan (preview only), audit_web_source, audit_apk, audit_android_source and
-audit_ios_source (jetscan Pro).";
+resolve_plan (preview only)";
+
+/// The `jetscan mcp --help` text of this build.
+pub fn usage() -> String {
+    format!("{USAGE}{}.", tools::pro_notes().1)
+}
+
+/// The server instructions of this build.
+fn instructions() -> String {
+    format!("{INSTRUCTIONS}{}", tools::pro_notes().0)
+}
 
 /// `jetscan mcp [--root <dir>]...`. Returns the process exit code.
 pub fn run(args: &[String]) -> i32 {
@@ -75,7 +83,7 @@ pub fn run(args: &[String]) -> i32 {
     while let Some(a) = it.next() {
         match a.as_str() {
             "-h" | "--help" => {
-                println!("{USAGE}");
+                println!("{}", usage());
                 return 0;
             }
             "--root" => match it.next() {
@@ -108,7 +116,7 @@ pub fn run(args: &[String]) -> i32 {
         env!("CARGO_PKG_VERSION"),
         ws.describe()
     );
-    let load = license::load;
+    let load = license::load_checked;
     let mut server = Server::new(ws, &load, &Curl, osv::default_cache_dir());
     let stdin = io::stdin();
     let mut input = stdin.lock();
@@ -285,15 +293,17 @@ pub struct Server<'a> {
     client_has_roots: bool,
     pending_roots: Option<String>,
     roots_asked: u64,
-    license: &'a dyn Fn() -> Status,
+    license: &'a dyn Fn() -> Checked,
     http: &'a dyn Http,
     osv_cache: Option<PathBuf>,
+    /// Where the jetscan Pro trial counter lives (`~/.jetscan`), shared with the CLI.
+    trial_dir: Option<PathBuf>,
 }
 
 impl<'a> Server<'a> {
     pub fn new(
         ws: Workspace,
-        license: &'a dyn Fn() -> Status,
+        license: &'a dyn Fn() -> Checked,
         http: &'a dyn Http,
         osv_cache: Option<PathBuf>,
     ) -> Server<'a> {
@@ -306,6 +316,7 @@ impl<'a> Server<'a> {
             license,
             http,
             osv_cache,
+            trial_dir: license::jetscan_home(),
         }
     }
 
@@ -519,7 +530,7 @@ impl<'a> Server<'a> {
                 vec![
                     ("supportedVersions", supported_versions()),
                     ("capabilities", capabilities()),
-                    ("instructions", s(INSTRUCTIONS)),
+                    ("instructions", s(&instructions())),
                 ],
             ),
             "tools/list" => self.result(id, &era, vec![("tools", tools::list())]),
@@ -558,7 +569,7 @@ impl<'a> Server<'a> {
                     ("protocolVersion", s(version)),
                     ("capabilities", capabilities()),
                     ("serverInfo", server_info()),
-                    ("instructions", s(INSTRUCTIONS)),
+                    ("instructions", s(&instructions())),
                 ]),
             ),
         ]))
@@ -594,6 +605,7 @@ impl<'a> Server<'a> {
             license: self.license,
             http: self.http,
             osv_cache: self.osv_cache.clone(),
+            trial_dir: self.trial_dir.clone(),
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             tools::call(name, &args, &env)
@@ -638,7 +650,7 @@ mod tests {
     fn server() -> (Server<'static>, PathBuf) {
         let dir = std::env::temp_dir();
         let ws = Workspace::new(&[], &dir).unwrap();
-        static FREE: fn() -> Status = || Status::Free;
+        static FREE: fn() -> Checked = Checked::free;
         (Server::new(ws, &FREE, &NoNetwork, None), dir)
     }
 
@@ -724,7 +736,10 @@ mod tests {
             assert!(res.get("resultType").is_none());
             let list = one(&mut s, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
             let tools = list.get("result").and_then(|r| r.get("tools")).unwrap();
-            assert_eq!(tools.as_array().unwrap().len(), 8);
+            assert_eq!(
+                tools.as_array().unwrap().len(),
+                tools::list().as_array().unwrap().len()
+            );
         }
     }
 

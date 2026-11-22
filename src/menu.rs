@@ -9,10 +9,16 @@
 //! The one item that is not a jetscan command, "Connect jetscan to your AI editor", only prints
 //! setup instructions. It never edits an editor's config file; the only thing it may run is
 //! `claude mcp add ...`, and only when Claude Code is on PATH and the user types exactly `yes`.
+//!
+//! The "jetscan console" item (`menu/console.rs`) is a prompt that accepts jetscan commands
+//! only; it runs them through `exec` too and never starts any other program.
+//!
+//! Items 1-6 and 12 (the console) are the same in every build. jetscan Pro (`menu/pro.rs`)
+//! adds 7-11. The console sits in the FIX AND TOOLS group.
 
 use jetscan::finding_v2::{RedactionPolicy, RemediationState};
 use jetscan::resolve::ResolvePlan;
-use jetscan::ui;
+use jetscan::{edition, ui};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -36,6 +42,9 @@ pub trait Host {
     fn claude(&self) -> Option<PathBuf>;
     /// Runs `program args` in this terminal and waits. `None`: it could not be started.
     fn spawn(&mut self, program: &Path, args: &[String]) -> Option<i32>;
+    /// Waits (jetscan Pro: the pause between two ownership checks of a website).
+    #[cfg_attr(not(feature = "pro"), allow(dead_code))]
+    fn wait(&mut self, time: std::time::Duration);
 }
 
 /// The real computer.
@@ -69,6 +78,10 @@ impl Host for System {
             .ok()?;
         Some(status.code().unwrap_or(1))
     }
+
+    fn wait(&mut self, time: std::time::Duration) {
+        std::thread::sleep(time);
+    }
 }
 
 struct Session<'a, R: BufRead, W: Write> {
@@ -81,7 +94,15 @@ struct Session<'a, R: BufRead, W: Write> {
     plan_dir: PathBuf,
     /// Commands run by the current action, for the "Equivalent command" lines.
     ran: Vec<Vec<String>>,
+    /// Lines typed into the console, for its `history` (this menu session only).
+    history: Vec<String>,
 }
+
+mod console;
+#[cfg(feature = "pro")]
+mod pro;
+/// Stable in free and Pro builds; numbers 7-11 belong to Pro.
+const CONSOLE: &str = "12";
 
 /// Whether `jetscan` without arguments should open the menu instead of printing usage.
 pub fn interactive() -> bool {
@@ -106,47 +127,83 @@ pub fn run<R: BufRead, W: Write>(
         cwd,
         plan_dir: plan_dir.to_path_buf(),
         ran: Vec::new(),
+        history: Vec::new(),
     };
     s.header();
     loop {
         s.show_menu();
-        let Ok(choice) = s.ask(&format!("{} ", ui::bold("Choose a number (0 to quit):"))) else {
+        s.say("");
+        let Ok(choice) = s.ask(&format!(
+            "  {} ",
+            ui::bold("Type a number and press Enter:")
+        )) else {
             return s.bye();
         };
         s.ran.clear();
         let result = match choice.trim().to_ascii_lowercase().as_str() {
             "1" => s.scan(),
             "2" => s.secrets(),
-            "3" => s.web(),
-            "4" => s.apk(),
-            "5" => s.android(),
-            "6" => s.ios(),
-            "7" => s.resolve(),
-            "8" => s.machine(),
-            "9" => s.license(),
-            "10" => s.connect(),
+            "3" => s.resolve(),
+            "4" => s.machine(),
+            "5" => s.license(),
+            "6" => s.connect(),
+            c if c == CONSOLE => s.console(),
             "0" | "q" | "quit" | "exit" => return s.bye(),
             "" => continue,
-            other => {
-                s.say(&ui::yellow(&format!(
-                    "'{}' is not on the list. Type a number from 0 to 10.",
-                    ui::sanitize_line(other)
-                )));
-                continue;
-            }
+            other => match s.pro_choice(other) {
+                Some(result) => result,
+                None => {
+                    s.warn(&format!(
+                        "'{}' is not on the list. Type one of the numbers shown above.",
+                        ui::sanitize_line(other)
+                    ));
+                    continue;
+                }
+            },
         };
         if result == Err(Stop::Quit) {
             return s.bye();
         }
         if !s.ran.is_empty() {
             s.show_commands();
-            if s.ask(&ui::dim("Press Enter to return to the menu"))
-                .is_err()
-            {
+            if s.pause().is_err() {
                 return s.bye();
             }
         }
     }
+}
+
+/// The widest line the menu writes itself (paths and commands excepted): an 80-column
+/// console with a margin.
+const WIDTH: usize = 78;
+/// Menu numbers are right-aligned in this many columns; the item text follows 3 spaces on.
+const NUMBER: usize = 6;
+/// Item text is padded to this width before a tag such as "alpha".
+const ITEM_TEXT: usize = 55;
+/// The answer prompt of every question.
+const PROMPT: &str = "  > ";
+
+/// Words of `text` in lines of at most `width` columns (a longer word gets its own line),
+/// each starting with `indent`.
+fn wrap(text: &str, indent: &str, width: usize) -> Vec<String> {
+    let room = width.saturating_sub(indent.chars().count()).max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let len = line.chars().count();
+        if len > 0 && len + 1 + word.chars().count() > room {
+            lines.push(format!("{indent}{line}"));
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(format!("{indent}{line}"));
+    }
+    lines
 }
 
 impl<R: BufRead, W: Write> Session<'_, R, W> {
@@ -173,76 +230,133 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
         }
     }
 
+    /// A paragraph, wrapped to the menu width.
+    fn text(&mut self, text: &str) {
+        for line in wrap(text, "  ", WIDTH) {
+            self.say(&line);
+        }
+    }
+
+    /// A short dimmed hint under a question or a title, wrapped.
+    fn hint(&mut self, text: &str) {
+        for line in wrap(text, "    ", WIDTH) {
+            self.say(&ui::dim(&line));
+        }
+    }
+
+    /// A warning or "try again" line, wrapped.
+    fn warn(&mut self, text: &str) {
+        for line in wrap(text, "  ", WIDTH) {
+            self.say(&ui::yellow(&line));
+        }
+    }
+
+    /// A blank line, then a bold title or question.
+    fn title(&mut self, text: &str) {
+        self.say("");
+        for line in wrap(text, "  ", WIDTH) {
+            self.say(&ui::bold(&line));
+        }
+    }
+
     fn header(&mut self) {
+        self.say("");
         self.say(&format!(
-            "{} {}",
-            ui::bold(&format!("jetscan {}", env!("CARGO_PKG_VERSION"))),
-            ui::dim("— security scanner")
+            "  {}  {}",
+            ui::bold(&format!("jetscan {}", edition::version())),
+            ui::dim("—  security scanner")
         ));
-        self.say(&ui::dim(
-            "Everything runs on this computer. Your code and files are never uploaded.",
+        self.say(&format!(
+            "  {}",
+            ui::dim("Everything runs on this computer. Your code and files are never uploaded.")
         ));
     }
 
     fn show_menu(&mut self) {
-        let alpha = ui::dim("(alpha)");
-        let items: [(&str, &str, bool); 11] = [
-            (
-                "1",
-                "Scan a project for leaked secrets, vulnerable packages and risky GitHub Actions",
-                false,
-            ),
-            ("2", "Scan a project for leaked secrets only", false),
-            ("3", "Check a website's source code (Next.js / React)", true),
-            ("4", "Check an Android app (.apk)", true),
-            (
-                "5",
-                "Check an Android app's source code (Gradle project)",
-                true,
-            ),
-            ("6", "Check an iOS app's source code (Xcode project)", true),
-            (
-                "7",
-                "Fix what was found (plan → preview → apply → verify)",
-                true,
-            ),
-            (
-                "8",
-                "Scan this whole computer for exposed credentials",
-                false,
-            ),
-            ("9", "License status / where to buy", false),
-            (
-                "10",
-                "Connect jetscan to your AI editor (Claude Code, Cursor, VS Code…)",
-                false,
-            ),
-            ("0", "Quit", false),
-        ];
+        self.group("CHECK A PROJECT");
+        self.item(
+            "1",
+            "Leaked secrets, vulnerable packages and risky GitHub Actions",
+            None,
+        );
+        self.item("2", "Leaked secrets only", None);
+        self.group("FIX AND TOOLS");
+        self.item(
+            "3",
+            "Fix what was found  (plan → preview → apply → verify)",
+            Some("alpha"),
+        );
+        self.item(
+            "4",
+            "Scan this whole computer for exposed credentials",
+            None,
+        );
+        self.item("5", "License status / where to buy", None);
+        self.item(
+            "6",
+            "Connect jetscan to your AI editor (Claude Code, Cursor, VS Code…)",
+            None,
+        );
+        self.item(CONSOLE, "jetscan console — type jetscan commands", None);
+        self.group("JETSCAN PRO");
+        self.pro_menu();
         self.say("");
-        self.say(&ui::bold("What do you want to do?"));
-        for (key, text, is_alpha) in items {
-            let tail = if is_alpha {
-                format!(" {alpha}")
-            } else {
-                String::new()
-            };
-            self.say(&format!(
-                "  {}  {text}{tail}",
-                ui::cyan(&format!("{key:>2}"))
-            ));
-        }
+        self.item("0", "Quit", None);
+    }
+
+    /// A blank line and a group heading (bold capitals; plain capitals without colors).
+    fn group(&mut self, name: &str) {
+        self.say("");
+        self.say(&format!("  {}", ui::bold(name)));
+    }
+
+    /// `     7   Text ...    alpha`: the number right-aligned, an optional tag in its column.
+    fn item(&mut self, key: &str, text: &str, tag: Option<&str>) {
+        let number = format!(
+            "{}{}",
+            " ".repeat(NUMBER.saturating_sub(key.len())),
+            ui::cyan(key)
+        );
+        let line = match tag {
+            Some(tag) => format!(
+                "{number}   {}  {}",
+                ui::pad_right(text, ITEM_TEXT),
+                ui::dim(tag)
+            ),
+            None => format!("{number}   {text}"),
+        };
+        self.say(&line);
+    }
+
+    /// The free build lists no Pro items, only where jetscan Pro comes from.
+    #[cfg(not(feature = "pro"))]
+    fn pro_menu(&mut self) {
+        let indent = " ".repeat(NUMBER + 3);
+        self.say(&ui::dim(&format!(
+            "{indent}jetscan Pro adds website, APK, Android, iOS and live-site checks"
+        )));
+        self.say(&format!("{indent}{}", ui::cyan(edition::SITE)));
+    }
+
+    #[cfg(not(feature = "pro"))]
+    fn pro_choice(&mut self, _choice: &str) -> Option<Step<()>> {
+        None
     }
 
     fn bye(&mut self) -> i32 {
-        self.say("Bye.");
+        self.say("");
+        self.say("  Bye.");
         let _ = self.out.flush();
         0
     }
 
     /// Runs one command through the CLI entry point and remembers it.
     fn run(&mut self, args: Vec<String>) -> i32 {
-        self.say(&ui::dim(&format!("Running: {}", command_line(&args))));
+        self.say("");
+        self.say(&format!(
+            "  {}",
+            ui::dim(&format!("Running: {}", command_line(&args)))
+        ));
         self.say("");
         let _ = self.out.flush();
         let code = (self.exec)(&args);
@@ -258,27 +372,26 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             "Equivalent commands:"
         };
         self.say("");
-        self.say(&ui::bold(label));
+        self.say(&format!("  {}", ui::bold(label)));
         let lines: Vec<String> = self.ran.iter().map(|a| command_line(a)).collect();
         for line in lines {
-            self.say(&format!("  {}", ui::cyan(&line)));
+            self.say(&format!("    {}", ui::cyan(&line)));
         }
     }
 
-    /// A folder to work on. `None`: the current folder (the CLI default).
-    fn folder(&mut self, what: &str) -> Step<Option<String>> {
-        self.say("");
-        self.say(&ui::bold(what));
-        self.say(&format!(
-            "  {} {}",
-            ui::dim("Enter = this folder:"),
-            shown(self.cwd)
-        ));
-        self.say(&ui::dim(
-            "  Or type a path (you can drag the folder into this window). 0 = back",
-        ));
+    /// A folder to work on. `None`: the current folder (the CLI default). `note`: a hint
+    /// under the question ("" for none).
+    fn folder(&mut self, question: &str, note: &str) -> Step<Option<String>> {
+        self.title(question);
+        if !note.is_empty() {
+            self.hint(note);
+        }
+        self.hint("Press Enter for this folder:");
+        let here = shown(self.cwd);
+        self.say(&format!("      {}", ui::cyan(&here)));
+        self.hint("Or type another path (you can drag the folder into this window). 0 = back");
         loop {
-            let raw = self.ask("> ")?;
+            let raw = self.ask(PROMPT)?;
             let typed = clean_path(&raw);
             if typed.is_empty() {
                 return Ok(None);
@@ -295,58 +408,31 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             } else {
                 "No such folder"
             };
-            self.say(&ui::yellow(&format!(
+            self.warn(&format!(
                 "{why}: {}. Try again, or 0 to go back.",
                 shown(&path)
-            )));
+            ));
         }
     }
 
-    /// An existing file (no default).
-    fn file(&mut self, what: &str) -> Step<String> {
-        self.say("");
-        self.say(&ui::bold(what));
-        self.say(&ui::dim(
-            "  Type the path (you can drag the file into this window). 0 = back",
+    /// A yes/no question with an optional hint (`note`, "" for none).
+    fn yes_no(&mut self, question: &str, note: &str, default: bool) -> Step<bool> {
+        self.title(question);
+        if !note.is_empty() {
+            self.hint(note);
+        }
+        self.hint(&format!(
+            "Type y or n. Enter = {}. 0 = back",
+            if default { "yes" } else { "no" }
         ));
         loop {
-            let raw = self.ask("> ")?;
-            let typed = clean_path(&raw);
-            if typed == "0" {
-                return Err(Stop::Back);
-            }
-            if typed.is_empty() {
-                self.say(&ui::yellow(
-                    "Please type the path of the file, or 0 to go back.",
-                ));
-                continue;
-            }
-            let path = self.absolute(&typed);
-            if path.is_file() {
-                return Ok(typed);
-            }
-            let why = if path.is_dir() {
-                "That is a folder, not a file"
-            } else {
-                "No such file"
-            };
-            self.say(&ui::yellow(&format!(
-                "{why}: {}. Try again, or 0 to go back.",
-                shown(&path)
-            )));
-        }
-    }
-
-    fn yes_no(&mut self, question: &str, default: bool) -> Step<bool> {
-        let hint = if default { "[Y/n]" } else { "[y/N]" };
-        loop {
-            let answer = self.ask(&format!("{question} {} ", ui::dim(hint)))?;
+            let answer = self.ask(PROMPT)?;
             match answer.trim().to_ascii_lowercase().as_str() {
                 "" => return Ok(default),
                 "y" | "yes" => return Ok(true),
                 "n" | "no" => return Ok(false),
                 "0" => return Err(Stop::Back),
-                _ => self.say(&ui::yellow("Please answer y or n (or 0 to go back).")),
+                _ => self.warn("Please answer y or n (or 0 to go back)."),
             }
         }
     }
@@ -369,20 +455,21 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             return Ok(false);
         }
         let check = self.yes_no(
-            "Also check the git history (old commits)? Slower on big projects.",
+            "Also check the git history (old commits)?",
+            "Slower on big projects.",
             true,
         )?;
         Ok(!check)
     }
 
     fn scan(&mut self) -> Step<()> {
-        let folder = self.folder("Which project folder should be scanned?")?;
+        let folder = self.folder("Which project folder should be scanned?", "")?;
         let no_history = self.skip_history(&folder)?;
-        self.say(&ui::dim(
-            "Vulnerable packages are looked up on OSV.dev: only package names and versions are \
-             sent, never code or file paths.",
-        ));
-        let online = self.yes_no("Look up packages online?", true)?;
+        let online = self.yes_no(
+            "Look up vulnerable packages online (OSV.dev)?",
+            "Only package names and versions are sent, never code or file paths.",
+            true,
+        )?;
         let mut args = vec!["scan".to_string()];
         args.extend(folder);
         if no_history {
@@ -396,7 +483,7 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
     }
 
     fn secrets(&mut self) -> Step<()> {
-        let folder = self.folder("Which project folder should be scanned for secrets?")?;
+        let folder = self.folder("Which project folder should be scanned for secrets?", "")?;
         let no_history = self.skip_history(&folder)?;
         let mut args = vec!["secrets".to_string()];
         args.extend(folder);
@@ -407,56 +494,15 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
         Ok(())
     }
 
-    fn web(&mut self) -> Step<()> {
-        let folder = self.folder(
-            "Which website project folder (the one with package.json)? This reads source code, \
-             not a live URL.",
-        )?;
-        let mut args = vec!["web".to_string(), "source".to_string()];
-        args.extend(folder);
-        self.run(args);
-        Ok(())
-    }
-
-    fn apk(&mut self) -> Step<()> {
-        let file = self.file("Which .apk file? It is only read, never installed or run.")?;
-        self.run(vec!["apk".to_string(), file]);
-        Ok(())
-    }
-
-    fn android(&mut self) -> Step<()> {
-        let folder = self.folder(
-            "Which Android project folder (the one with settings.gradle or build.gradle)? \
-             Nothing is built or run.",
-        )?;
-        let mut args = vec!["android".to_string()];
-        args.extend(folder);
-        self.run(args);
-        Ok(())
-    }
-
-    fn ios(&mut self) -> Step<()> {
-        let folder = self.folder(
-            "Which iOS project folder (the one with the .xcodeproj, Package.swift or Info.plist)? \
-             Nothing is built or run.",
-        )?;
-        let mut args = vec!["ios".to_string()];
-        args.extend(folder);
-        self.run(args);
-        Ok(())
-    }
-
     fn machine(&mut self) -> Step<()> {
         self.say("");
-        self.say(
+        self.text(
             "This looks through your home folder: saved passwords and tokens, SSH keys, shell \
              history and every git repository. It can take several minutes.",
         );
-        self.say(&ui::dim(
-            "Checking packages sends only package names and versions to OSV.dev.",
-        ));
         let deps = self.yes_no(
             "Also check the packages of every repository for known vulnerabilities?",
+            "Only package names and versions are sent to OSV.dev.",
             false,
         )?;
         let mut args = vec!["machine".to_string()];
@@ -475,23 +521,24 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
     /// Setup instructions for `jetscan mcp` in AI editors. Prints only; the one optional
     /// action is `claude mcp add`, and only after an exact `yes`.
     fn connect(&mut self) -> Step<()> {
-        self.say("");
-        self.say(&ui::bold("Connect jetscan to your AI editor"));
-        self.say(
+        self.title("Connect jetscan to your AI editor");
+        self.text(
             "Your AI coding tool can then run jetscan's checks itself after it writes code: \
              leaked secrets, vulnerable packages, risky GitHub Actions.",
         );
-        self.say(
+        self.say("");
+        self.text(
             "jetscan runs on this computer and uploads nothing. The AI tool sends jetscan's \
-             reports (never the secret values) to its own AI model, like any text it reads.",
+             reports (never the secret values) to its own AI model, like any text it reads. \
+             The AI gets reports and fix plans only: jetscan changes no files for it.",
         );
-        self.say("The AI gets reports and fix plans only: jetscan changes no files for it.");
         let Some(exe) = self.host.jetscan_exe() else {
-            self.say(&ui::yellow(
+            self.say("");
+            self.warn(
                 "Could not tell where this jetscan program is. Follow the guide and use the full \
                  path of the jetscan program:",
-            ));
-            self.say(&format!("  {MCP_GUIDE}"));
+            );
+            self.say(&format!("    {}", ui::cyan(MCP_GUIDE)));
             return self.pause();
         };
         let exe = exe.display().to_string();
@@ -503,77 +550,67 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
         };
         let project_add = add(&[]);
         let user_add = add(&["--scope", "user"]);
-        self.say("");
-        self.say(&ui::bold("Claude Code: run one of these in a terminal"));
-        self.say(&ui::dim(
-            "  For one project (run it in that project's folder):",
-        ));
+        self.title("Claude Code: run one of these in a terminal");
+        self.hint("For one project (run it in that project's folder):");
         self.say(&format!(
-            "    {}",
+            "      {}",
             ui::cyan(&program_line("claude", &project_add))
         ));
-        self.say(&ui::dim("  For every project:"));
+        self.hint("For every project:");
         self.say(&format!(
-            "    {}",
+            "      {}",
             ui::cyan(&program_line("claude", &user_add))
         ));
-        self.say(&ui::dim("  Check it with: claude mcp list"));
-        self.say("");
-        self.say(&format!(
-            "{} {}",
-            ui::bold("Cursor: save this as .cursor/mcp.json in your project"),
-            ui::dim("(not yet tested with Cursor)")
-        ));
+        self.hint("Check it with: claude mcp list");
+        self.title("Cursor: save this as .cursor/mcp.json in your project");
+        self.hint("Not yet tested with Cursor.");
         self.snippet(&editor_json("mcpServers", &exe));
-        self.say("");
-        self.say(&format!(
-            "{} {}",
-            ui::bold("VS Code (Copilot): save this as .vscode/mcp.json in your project"),
-            ui::dim("(not yet tested with VS Code)")
-        ));
+        self.title("VS Code (Copilot): save this as .vscode/mcp.json in your project");
+        self.hint("Not yet tested with VS Code.");
         self.snippet(&editor_json("servers", &exe));
         self.say("");
-        self.say(
+        self.text(
             "If the file already exists, add only the \"jetscan\" entry to it. Then restart the \
              editor or reload its MCP servers.",
         );
-        self.say(&ui::dim(
-            "Free through the AI: secrets, packages, GitHub Actions, fix plans. The website, APK, \
-             Android and iOS source audits need a jetscan license key there.",
+        self.say("");
+        self.hint(&format!(
+            "Free through the AI: secrets, packages, GitHub Actions, fix plans.{}",
+            pro_connect_note()
         ));
-        self.say(&ui::dim(&format!("Other editors and details: {MCP_GUIDE}")));
+        self.hint(&format!("Other editors and details: {MCP_GUIDE}"));
         if let Some(claude) = self.host.claude() {
             self.say("");
-            self.say(&format!(
+            self.text(&format!(
                 "Claude Code is installed here ({}). jetscan can run the \"every project\" \
                  command above for you.",
                 shown(&claude)
             ));
+            self.say("");
             let answer = self.ask(&format!(
-                "Type {} to run it now, anything else skips: ",
+                "  Type {} to run it now, anything else skips: ",
                 ui::bold("yes")
             ))?;
             if answer.trim() != "yes" {
-                self.say("Skipped. Nothing was changed.");
+                self.text("Skipped. Nothing was changed.");
                 return self.pause();
             }
-            self.say(&ui::dim(&format!(
-                "Running: {}",
-                program_line("claude", &user_add)
-            )));
+            self.say("");
+            self.say(&format!(
+                "  {}",
+                ui::dim(&format!("Running: {}", program_line("claude", &user_add)))
+            ));
             self.say("");
             let _ = self.out.flush();
             match self.host.spawn(&claude, &user_add) {
                 Some(0) => self.say(&ui::green(
-                    "Done. Start a new Claude Code session; /mcp lists jetscan.",
+                    "  Done. Start a new Claude Code session; /mcp lists jetscan.",
                 )),
-                Some(code) => self.say(&ui::yellow(&format!(
+                Some(code) => self.warn(&format!(
                     "claude stopped with exit code {code} (see above). You can run the command \
                      yourself."
-                ))),
-                None => self.say(&ui::yellow(
-                    "claude could not be started. You can run the command yourself.",
                 )),
+                None => self.warn("claude could not be started. You can run the command yourself."),
             }
         }
         self.pause()
@@ -581,25 +618,28 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
 
     fn snippet(&mut self, text: &str) {
         for line in text.lines() {
-            self.say(&format!("  {}", ui::sanitize_line(line)));
+            self.say(&format!("    {}", ui::sanitize_line(line)));
         }
     }
 
     fn pause(&mut self) -> Step<()> {
         self.say("");
-        self.ask(&ui::dim("Press Enter to return to the menu"))?;
+        self.ask(&format!(
+            "  {}",
+            ui::dim("Press Enter to return to the menu")
+        ))?;
         Ok(())
     }
 
     /// plan → preview → (exactly "yes") → apply --confirm → verify.
     fn resolve(&mut self) -> Step<()> {
         self.say("");
-        self.say(
+        self.text(
             "jetscan makes a fix plan for the project's GitHub Actions workflows and shows the \
              exact changes. Nothing is changed unless you type yes.",
         );
         let folder = self
-            .folder("Which project folder?")?
+            .folder("Which project folder?", "")?
             .unwrap_or_else(|| ".".to_string());
         let plan = self.plan_dir.join(format!(
             "jetscan-plan-{}-{}.json",
@@ -609,8 +649,7 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
                 .map_or(0, |d| d.as_nanos())
         ));
         let plan_arg = plan.display().to_string();
-        self.say("");
-        self.say(&ui::bold("Step 1 of 4: make a fix plan (read-only)"));
+        self.title("Step 1 of 4: make a fix plan (read-only)");
         let code = self.run(vec![
             "resolve".into(),
             "plan".into(),
@@ -619,43 +658,39 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             plan_arg.clone(),
         ]);
         if code != 0 {
-            self.say(&ui::yellow(
-                "No plan was made (see above). Nothing was changed.",
-            ));
+            self.say("");
+            self.warn("No plan was made (see above). Nothing was changed.");
             return Ok(());
         }
-        self.say("");
-        self.say(&ui::bold("Step 2 of 4: preview the changes (read-only)"));
+        self.title("Step 2 of 4: preview the changes (read-only)");
         if self.run(vec!["resolve".into(), "preview".into(), plan_arg.clone()]) != 0 {
-            self.say(&ui::yellow(
-                "The plan could not be shown. Nothing was changed.",
-            ));
+            self.say("");
+            self.warn("The plan could not be shown. Nothing was changed.");
             return Ok(());
         }
         if !applicable(&plan) {
-            self.say(&ui::yellow(
+            self.say("");
+            self.warn(
                 "There is nothing jetscan can change automatically here; the plan above is \
                  advice only. Nothing was changed.",
-            ));
+            );
             return Ok(());
         }
+        self.title("Step 3 of 4: apply");
         self.say("");
-        self.say(&ui::bold("Step 3 of 4: apply"));
         let answer = match self.ask(&format!(
-            "Apply these changes? Type {} to write them, anything else cancels: ",
+            "  Apply these changes? Type {} to write them, anything else cancels: ",
             ui::bold("yes")
         )) {
             Ok(a) => a,
             Err(stop) => {
-                self.say("Cancelled. Nothing was changed.");
+                self.text("Cancelled. Nothing was changed.");
                 return Err(stop);
             }
         };
         if answer.trim() != "yes" {
-            self.say(&format!(
-                "Cancelled. Nothing was changed. The plan is kept at {}",
-                shown(&plan)
-            ));
+            self.text("Cancelled. Nothing was changed. The plan is kept at:");
+            self.say(&format!("    {}", shown(&plan)));
             return Ok(());
         }
         let code = self.run(vec![
@@ -667,15 +702,22 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             folder,
         ]);
         if code != 0 {
-            self.say(&ui::yellow("Apply did not finish (see above)."));
+            self.say("");
+            self.warn("Apply did not finish (see above).");
             return Ok(());
         }
-        self.say("");
-        self.say(&ui::bold("Step 4 of 4: verify"));
+        self.title("Step 4 of 4: verify");
         self.run(vec!["resolve".into(), "verify".into(), plan_arg]);
         Ok(())
     }
 }
+
+#[cfg(not(feature = "pro"))]
+fn pro_connect_note() -> &'static str {
+    ""
+}
+#[cfg(feature = "pro")]
+use pro::pro_connect_note;
 
 /// Where the AI-editor setup is documented in full.
 const MCP_GUIDE: &str = "https://github.com/y6861977-ui/jetscan/blob/main/docs/mcp/README.md";
@@ -789,9 +831,9 @@ mod tests {
     use super::*;
     use std::fs;
 
-    struct Temp(PathBuf);
+    pub(super) struct Temp(pub(super) PathBuf);
     impl Temp {
-        fn new(tag: &str) -> Self {
+        pub(super) fn new(tag: &str) -> Self {
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -809,20 +851,23 @@ mod tests {
     }
 
     /// A computer with a known jetscan path, maybe Claude Code, and recorded program runs.
-    struct Fake {
+    pub(super) struct Fake {
         exe: Option<PathBuf>,
         claude: Option<PathBuf>,
         exit: Option<i32>,
         spawned: Vec<(PathBuf, Vec<String>)>,
+        #[cfg_attr(not(feature = "pro"), allow(dead_code))]
+        pub(super) waited: Vec<std::time::Duration>,
     }
 
     impl Fake {
-        fn new(exe: &str, claude: Option<&str>) -> Self {
+        pub(super) fn new(exe: &str, claude: Option<&str>) -> Self {
             Fake {
                 exe: Some(PathBuf::from(exe)),
                 claude: claude.map(PathBuf::from),
                 exit: Some(0),
                 spawned: Vec::new(),
+                waited: Vec::new(),
             }
         }
     }
@@ -838,10 +883,13 @@ mod tests {
             self.spawned.push((program.to_path_buf(), args.to_vec()));
             self.exit
         }
+        fn wait(&mut self, time: std::time::Duration) {
+            self.waited.push(time);
+        }
     }
 
     /// Feeds `script` to the menu; `exec` gets every command. Returns (exit, output, commands).
-    fn drive(
+    pub(super) fn drive(
         script: &str,
         cwd: &Path,
         exec: &mut dyn FnMut(&[String]) -> i32,
@@ -849,7 +897,7 @@ mod tests {
         drive_on(script, cwd, exec, &mut Fake::new("jetscan", None))
     }
 
-    fn drive_on(
+    pub(super) fn drive_on(
         script: &str,
         cwd: &Path,
         exec: &mut dyn FnMut(&[String]) -> i32,
@@ -863,7 +911,158 @@ mod tests {
             exec(args)
         };
         let code = run(&mut input, &mut out, cwd, cwd, &mut record, host);
-        (code, String::from_utf8(out).unwrap(), ran)
+        // Colors depend on the terminal `cargo test` runs in: compare plain text.
+        (code, strip_colors(&String::from_utf8(out).unwrap()), ran)
+    }
+
+    /// `text` without `ESC [ ... m` color codes.
+    fn strip_colors(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(i) = rest.find("\x1b[") {
+            out.push_str(&rest[..i]);
+            let tail = &rest[i + 2..];
+            rest = tail.find('m').map_or("", |m| &tail[m + 1..]);
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The menu items as (number, text column, tag column) for lines shaped like
+    /// `     7   Text   alpha`.
+    pub(super) fn items(text: &str) -> Vec<(usize, usize, Option<usize>)> {
+        text.lines()
+            .filter_map(|line| {
+                let chars: Vec<char> = line.chars().collect();
+                if chars.len() <= NUMBER + 3 || chars[NUMBER..NUMBER + 3] != [' '; 3] {
+                    return None;
+                }
+                let head: String = chars[..NUMBER].iter().collect();
+                let key = head.trim_start();
+                if key.is_empty() || !key.chars().all(|c| c.is_ascii_digit()) {
+                    return None;
+                }
+                let tag = ["alpha", "soon"]
+                    .iter()
+                    .find(|t| line.ends_with(&format!("  {t}")))
+                    .map(|t| chars.len() - t.len());
+                Some((key.parse().unwrap(), NUMBER + 3, tag))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn menu_is_grouped_aligned_and_fits_80_columns() {
+        let t = Temp::new("layout");
+        let (_, text, _) = drive("", &t.0, &mut |_| 0);
+        let lines: Vec<&str> = text.lines().collect();
+        for line in &lines {
+            assert!(line.chars().count() <= WIDTH, "too wide: {line:?}");
+        }
+        for group in ["CHECK A PROJECT", "FIX AND TOOLS", "JETSCAN PRO"] {
+            let at = lines.iter().position(|l| l.trim() == group).expect(group);
+            assert_eq!(lines[at - 1], "", "a blank line before {group}");
+        }
+        let found = items(&text);
+        let keys: Vec<usize> = found.iter().map(|i| i.0).collect();
+        // The console is always 12; the free build has no items 7-11.
+        let console: usize = CONSOLE.parse().unwrap();
+        assert_eq!(console, 12);
+        let pro = if cfg!(feature = "pro") { 7..12 } else { 7..7 };
+        let want: Vec<usize> = (1..=6).chain([console]).chain(pro).chain([0]).collect();
+        assert_eq!(keys, want, "{text}");
+        let tools = lines
+            .iter()
+            .position(|l| l.trim() == "FIX AND TOOLS")
+            .unwrap();
+        let pro = lines
+            .iter()
+            .position(|l| l.trim() == "JETSCAN PRO")
+            .unwrap();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("jetscan console — type jetscan commands"))
+            .unwrap();
+        assert!(tools < at && at < pro, "{text}");
+        assert!(found.iter().all(|i| i.1 == NUMBER + 3));
+        let tags: Vec<usize> = found.iter().filter_map(|i| i.2).collect();
+        assert_eq!(tags.len(), if cfg!(feature = "pro") { 6 } else { 1 });
+        assert!(tags.iter().all(|&c| c == tags[0]), "one alpha column");
+        let quit = lines.iter().position(|l| l.trim() == "0   Quit").unwrap();
+        assert_eq!(lines[quit - 1], "");
+        let prompt = lines
+            .iter()
+            .position(|l| l.starts_with("  Type a number and press Enter:"))
+            .unwrap();
+        assert_eq!(lines[prompt - 1], "", "a blank line before the prompt");
+        assert_eq!(
+            text.contains("jetscan Pro adds website, APK, Android, iOS and live-site checks"),
+            !cfg!(feature = "pro")
+        );
+        assert!(text.contains(edition::SITE) != cfg!(feature = "pro"));
+    }
+
+    #[test]
+    fn questions_and_results_are_spaced() {
+        let t = Temp::new("spacing");
+        let (_, text, _) = drive("5\n\n4\n", &t.0, &mut |_| 0);
+        let lines: Vec<&str> = text.lines().collect();
+        let before = |needle: &str| {
+            let at = lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}: {text}"));
+            lines[at - 1]
+        };
+        // Typed answers are not echoed here: in a console the Enter ends the prompt line and
+        // the menu's own line break leaves a blank line under it.
+        assert_eq!(
+            before("Running: jetscan license"),
+            "  Type a number and press Enter: "
+        );
+        assert_eq!(before("Equivalent command:"), "");
+        assert_eq!(before("Press Enter to return to the menu"), "");
+        // A question: a blank line, the question, short hints, then the prompt.
+        let q = lines
+            .iter()
+            .position(|l| l.contains("Also check the packages of every repository"))
+            .unwrap();
+        assert_eq!(lines[q - 1], "");
+        assert!(lines[q + 1].contains("OSV.dev"), "{text}");
+        assert!(lines[q + 2].contains("Enter = no"), "{text}");
+        assert!(lines[q + 3].starts_with(PROMPT), "{text}");
+        // A folder question shows the default folder on its own line.
+        let (_, text, _) = drive("2\n", &t.0, &mut |_| 0);
+        let lines: Vec<&str> = text.lines().collect();
+        let enter = lines
+            .iter()
+            .position(|l| l.contains("Press Enter for this folder:"))
+            .unwrap();
+        assert_eq!(lines[enter + 1].trim(), shown(&t.0));
+    }
+
+    #[test]
+    fn long_text_wraps_at_word_boundaries() {
+        let text = "one two three four five six seven eight nine ten";
+        let lines = wrap(text, "  ", 20);
+        assert!(lines.iter().all(|l| l.chars().count() <= 20), "{lines:?}");
+        assert!(lines.iter().all(|l| l.starts_with("  ")));
+        assert_eq!(
+            lines
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            text
+        );
+        // A word longer than the line is kept whole.
+        assert_eq!(wrap("https://example.com/very/long", "  ", 10).len(), 1);
+        assert!(wrap("", "  ", 10).is_empty());
+    }
+
+    #[test]
+    fn strip_colors_removes_only_color_codes() {
+        assert_eq!(strip_colors("\x1b[1mA\x1b[0m b \x1b[36m7\x1b[0m"), "A b 7");
     }
 
     const EXE: &str = r"C:\Program Files\jet scan\jetscan.exe";
@@ -872,7 +1071,7 @@ mod tests {
     fn ai_editor_setup_prints_commands_and_configs() {
         let t = Temp::new("ai");
         let mut host = Fake::new(EXE, None);
-        let (code, text, ran) = drive_on("10\n\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (code, text, ran) = drive_on("6\n\n0\n", &t.0, &mut |_| 0, &mut host);
         assert_eq!(code, 0);
         assert!(ran.is_empty(), "no jetscan command runs: {ran:?}");
         assert!(host.spawned.is_empty());
@@ -894,7 +1093,12 @@ mod tests {
         assert!(text.contains(r#""mcpServers": {"#), "{text}");
         assert!(text.contains(r#""servers": {"#), "{text}");
         assert!(text.contains("${workspaceFolder}"), "{text}");
-        assert!(text.contains("license key"), "{text}");
+        // Only jetscan Pro has MCP tools that need a key.
+        assert_eq!(
+            text.contains("license key"),
+            cfg!(feature = "pro"),
+            "{text}"
+        );
         assert!(text.contains("docs/mcp/README.md"), "{text}");
         assert!(
             !text.contains("Type yes to run it now"),
@@ -910,13 +1114,13 @@ mod tests {
         for answer in ["", "y", "Yes", "yes please", "no"] {
             let mut host = Fake::new(EXE, Some(claude));
             let (_, text, _) =
-                drive_on(&format!("10\n{answer}\n\n0\n"), &t.0, &mut |_| 0, &mut host);
+                drive_on(&format!("6\n{answer}\n\n0\n"), &t.0, &mut |_| 0, &mut host);
             assert!(text.contains("to run it now"), "{text}");
             assert!(text.contains("Skipped. Nothing was changed."), "{answer:?}");
             assert!(host.spawned.is_empty(), "{answer:?}");
         }
         let mut host = Fake::new(EXE, Some(claude));
-        let (code, text, ran) = drive_on("10\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (code, text, ran) = drive_on("6\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
         assert_eq!(code, 0);
         assert!(ran.is_empty());
         let user = strings(&["mcp", "add", "--scope", "user", "jetscan", "--", EXE, "mcp"]);
@@ -925,10 +1129,10 @@ mod tests {
 
         let mut host = Fake::new(EXE, Some(claude));
         host.exit = Some(1);
-        let (_, text, _) = drive_on("10\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (_, text, _) = drive_on("6\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
         assert!(text.contains("exit code 1"), "{text}");
         host.exit = None;
-        let (_, text, _) = drive_on("10\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (_, text, _) = drive_on("6\nyes\n\n0\n", &t.0, &mut |_| 0, &mut host);
         assert!(text.contains("could not be started"), "{text}");
     }
 
@@ -937,7 +1141,7 @@ mod tests {
         let t = Temp::new("ai-nopath");
         let mut host = Fake::new(EXE, Some("claude"));
         host.exe = None;
-        let (code, text, _) = drive_on("10\nyes\n0\n", &t.0, &mut |_| 0, &mut host);
+        let (code, text, _) = drive_on("6\nyes\n0\n", &t.0, &mut |_| 0, &mut host);
         assert_eq!(code, 0);
         assert!(text.contains("Could not tell where"), "{text}");
         assert!(text.contains("docs/mcp/README.md"), "{text}");
@@ -954,7 +1158,7 @@ mod tests {
         assert_eq!(plain(Path::new("/usr/bin/jetscan")), "/usr/bin/jetscan");
     }
 
-    fn strings(list: &[&str]) -> Vec<String> {
+    pub(super) fn strings(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
     }
 
@@ -977,7 +1181,7 @@ mod tests {
     #[test]
     fn bom_prefixed_input_is_understood() {
         let t = Temp::new("bom");
-        let (_, text, ran) = drive("\u{feff}9\n\n0\n", &t.0, &mut |_| 0);
+        let (_, text, ran) = drive("\u{feff}5\n\n0\n", &t.0, &mut |_| 0);
         assert!(!text.contains("is not on the list"), "{text}");
         assert_eq!(ran, vec![vec!["license".to_string()]]);
     }
@@ -989,13 +1193,13 @@ mod tests {
         let missing = t.0.join("missing").display().to_string();
         let file = t.0.join("file.txt").display().to_string();
         let script = format!(
-            "11\nhello\n2\n{missing}\n{file}\n\"{}\"\n\n0\n",
+            "42\nhello\n2\n{missing}\n{file}\n\"{}\"\n\n0\n",
             t.0.display()
         );
         let (code, text, ran) = drive(&script, &t.0, &mut |_| 0);
         assert_eq!(code, 0);
-        assert!(text.contains("'11' is not on the list"));
-        assert!(text.contains("Type a number from 0 to 10."));
+        assert!(text.contains("'42' is not on the list"));
+        assert!(text.contains("Type one of the numbers shown above."));
         assert!(text.contains("'hello' is not on the list"));
         assert!(text.contains("No such folder"));
         assert!(text.contains("That is a file, not a folder"));
@@ -1010,9 +1214,7 @@ mod tests {
     fn each_item_builds_the_cli_command() {
         let t = Temp::new("items");
         fs::create_dir_all(t.0.join("repo/.git")).unwrap();
-        fs::write(t.0.join("app.apk"), "not really").unwrap();
         let repo = t.0.join("repo").display().to_string();
-        let apk = t.0.join("app.apk").display().to_string();
         let cases: Vec<(String, Vec<String>)> = vec![
             ("1\n\n\n".into(), strings(&["scan"])),
             (
@@ -1020,15 +1222,9 @@ mod tests {
                 strings(&["scan", &repo, "--no-history", "--offline"]),
             ),
             (format!("2\n{repo}\ny\n"), strings(&["secrets", &repo])),
-            ("3\n\n".into(), strings(&["web", "source"])),
-            (format!("4\n\n{apk}\n"), strings(&["apk", &apk])),
-            ("5\n\n".into(), strings(&["android"])),
-            (format!("5\n{repo}\n"), strings(&["android", &repo])),
-            ("6\n\n".into(), strings(&["ios"])),
-            (format!("6\n{repo}\n"), strings(&["ios", &repo])),
-            ("8\n\n".into(), strings(&["machine"])),
-            ("8\nyes\n".into(), strings(&["machine", "--deps"])),
-            ("9\n".into(), strings(&["license"])),
+            ("4\n\n".into(), strings(&["machine"])),
+            ("4\nyes\n".into(), strings(&["machine", "--deps"])),
+            ("5\n".into(), strings(&["license"])),
         ];
         for (script, want) in cases {
             let (code, text, ran) = drive(&format!("{script}\n0\n"), &t.0, &mut |_| 0);
@@ -1041,20 +1237,18 @@ mod tests {
     #[test]
     fn zero_goes_back_without_running_anything() {
         let t = Temp::new("back");
-        for script in [
-            "2\n0\n", "4\n0\n", "5\n0\n", "6\n0\n", "8\n0\n", "1\n\n0\n", "7\n0\n",
-        ] {
+        for script in ["2\n0\n", "4\n0\n", "1\n\n0\n", "3\n0\n"] {
             let (code, text, ran) = drive(&format!("{script}0\n"), &t.0, &mut |_| 0);
             assert_eq!(code, 0);
             assert!(ran.is_empty(), "{script:?}");
-            assert!(!text.contains("Press Enter"), "{script:?}");
+            assert!(!text.contains("Press Enter to return"), "{script:?}");
         }
     }
 
     #[test]
     fn yes_no_asks_again_on_other_answers() {
         let t = Temp::new("yn");
-        let (_, text, ran) = drive("8\nmaybe\nN\n\n0\n", &t.0, &mut |_| 0);
+        let (_, text, ran) = drive("4\nmaybe\nN\n\n0\n", &t.0, &mut |_| 0);
         assert!(text.contains("Please answer y or n"));
         assert_eq!(ran, vec![strings(&["machine"])]);
     }
@@ -1062,7 +1256,7 @@ mod tests {
     #[test]
     fn resolve_stops_when_the_plan_fails() {
         let t = Temp::new("resolve-fail");
-        let (_, text, ran) = drive("7\n\n\n0\n", &t.0, &mut |_| 2);
+        let (_, text, ran) = drive("3\n\n\n0\n", &t.0, &mut |_| 2);
         assert_eq!(ran.len(), 1, "{ran:?}");
         assert_eq!(&ran[0][..3], &strings(&["resolve", "plan", "."])[..]);
         assert_eq!(ran[0][3], "--out");
@@ -1074,7 +1268,7 @@ mod tests {
     fn resolve_without_a_plan_file_never_asks_to_apply() {
         // The plan "succeeds" but wrote nothing readable: treated as nothing to apply.
         let t = Temp::new("resolve-empty");
-        let (_, text, ran) = drive("7\n\nyes\n\n0\n", &t.0, &mut |_| 0);
+        let (_, text, ran) = drive("3\n\nyes\n\n0\n", &t.0, &mut |_| 0);
         assert_eq!(ran.len(), 2, "plan and preview only: {ran:?}");
         assert!(text.contains("advice only"));
         assert!(!text.contains("Apply these changes?"));

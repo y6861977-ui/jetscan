@@ -34,6 +34,8 @@ pub struct Workspace {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Dir,
+    // Only the jetscan Pro APK tool asks for a file today.
+    #[cfg_attr(not(feature = "pro"), allow(dead_code))]
     File,
     Any,
 }

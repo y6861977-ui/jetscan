@@ -1,2 +1,0 @@
-// Developer-only overrides (ignored by git)
-DEV_API_TOKEN = @@PASSWORD@@
