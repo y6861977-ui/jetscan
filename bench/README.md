@@ -1,5 +1,9 @@
 # jetscan vs Gitleaks and Trivy
 
+Also: jetscan Pro on deliberately vulnerable training apps — [a blind test on four apps we had
+never seen](BLIND-APPS.md) (23 of 78 planted flaws found before any tuning) and [five apps the
+newer checks were written against](VULN-APPS.md) (not a blind number).
+
 A comparison we ran ourselves, with the scripts to repeat it (`bench/run.sh`). We publish all
 of it, including where jetscan loses. The author of jetscan wrote this benchmark, so read
 test 1 with that in mind; tests 2–4 use data we did not make.
