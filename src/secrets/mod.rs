@@ -9,6 +9,7 @@
 //!     → Hit (с сырым секретом, живёт только в памяти)
 //!     → Finding (только маска + отпечаток — это и уходит в отчёт).
 
+pub mod code;
 pub mod gitstatus;
 pub mod history;
 pub mod machine;

@@ -20,6 +20,7 @@ usage: jetscan scan [path] [options]      secrets + vulnerable dependencies + Gi
        jetscan license                    show the license key: plan, expiry, what it unlocks
        jetscan menu                       numbered menu, no commands to type (also: no arguments);
                                           its \"jetscan console\" item takes jetscan commands
+       jetscan guide [--lang en|ru]       the full user guide in your browser, offline (also: docs)
        jetscan mcp                        MCP server on stdio for AI coding tools (see `jetscan mcp --help`)
 
 Alpha (rules may change; see `<command> --help`):
@@ -135,6 +136,8 @@ fn jetscan_main(args: &[String]) -> i32 {
             );
             return 0;
         }
+        // The user guide in the browser (src/guide/): built in, offline.
+        Some("guide" | "instructions" | "docs") => return jetscan::guide::run(&args[1..]),
         // MCP server over stdio for AI coding tools (src/mcp/).
         Some("mcp") => return mcp::run(&args[1..]),
         // jetscan Pro (alpha): web source, apk, android, ios, url. Each scan goes through the
@@ -151,7 +154,7 @@ fn jetscan_main(args: &[String]) -> i32 {
         Some("resolve") => return jetscan::resolve::cli::run(&args[1..]),
         Some(other) => {
             ui::eprint_error(&format!("unknown command '{}'", ui::sanitize_line(other)));
-            ui::eprint_hint("run `jetscan --help`");
+            ui::eprint_hint("run `jetscan --help`, or `jetscan guide` for the full user guide");
             return 2;
         }
     };

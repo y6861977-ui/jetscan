@@ -83,7 +83,9 @@ including where jetscan loses: [bench/README.md](bench/README.md), with scripts 
 
 ## Commands
 
-Every command, option and exit code is in the [user guide](docs/guide/public-en.md).
+Every command, option and exit code is in the user guide ([English](docs/guide/public-en.md),
+[Russian](docs/guide/public-ru.md)). `jetscan guide` opens it in your browser, offline
+(`--lang ru` for Russian).
 
 ```
 usage: jetscan scan [path] [options]      secrets + vulnerable dependencies + GitHub Actions
@@ -92,7 +94,9 @@ usage: jetscan scan [path] [options]      secrets + vulnerable dependencies + Gi
        jetscan machine [options]          secrets on this whole machine (+ --deps)
        jetscan hook install|uninstall     git pre-commit hook: block commits with secrets
        jetscan license                    show the license key: plan, expiry, what it unlocks
-       jetscan menu                       numbered menu, no commands to type (also: no arguments)
+       jetscan menu                       numbered menu, no commands to type (also: no arguments);
+                                          its "jetscan console" item takes jetscan commands
+       jetscan guide [--lang en|ru]       the full user guide in your browser, offline (also: docs)
        jetscan mcp                        MCP server on stdio for AI coding tools (see `jetscan mcp --help`)
 
 Alpha (rules may change; see `<command> --help`):
@@ -108,6 +112,7 @@ jetscan Pro adds website source, live website (URL), APK, Android and iOS app au
 | `jetscan deps [path]` | known vulnerabilities in lockfiles, install scripts | OSV only |
 | `jetscan machine [--deps]` | credential stores, shell history, all repositories | none (OSV with `--deps`) |
 | `jetscan menu` | the same checks from a numbered [menu](#menu) | as the check you pick |
+| `jetscan guide` | the user guide as one page in your browser, for your plan (also `instructions`, `docs`) | none |
 | `jetscan mcp` | the checks as tools for [AI editors](#ai-editors-jetscan-mcp) | none unless the AI asks for an online OSV lookup |
 | `jetscan resolve ...` | [alpha](#resolve-alpha): fix plan, preview, apply, verify | none |
 
@@ -149,6 +154,10 @@ Detected: AWS, GitHub, GitLab, Slack (tokens and webhooks), Stripe, Google API, 
 Anthropic, npm, PyPI, Telegram, Resend, SendGrid, Twilio, Mailgun, Discord, Shopify,
 private keys (PEM/PGP), passwords in URLs, sensitive keys in `.env`, `.npmrc`, `.pypirc`,
 `.git-credentials`, `.docker/config.json`.
+Also secrets visible from the code itself: a key passed as a string into a crypto call
+(`createHmac`, `jwt.sign`, `SecretKeySpec`, ...), a hardcoded fallback for a secret environment
+variable (`process.env.JWT_SECRET || "…"`), and, with low confidence, a password compared with a
+hardcoded value.
 
 **Is the key still live?** `--verify` asks each key's own provider with one read-only
 "who am I" request (GitHub `/user`, OpenAI `/v1/models`, Slack `auth.test`, …) and marks the
@@ -183,7 +192,7 @@ testdata/               # a directory
 
 | Ecosystem | Lockfiles |
 |---|---|
-| npm | `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` (classic and Berry), `pnpm-lock.yaml` (v5, v6, v9) |
+| npm | `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` (classic and Berry), `pnpm-lock.yaml` (v5, v6, v9); with no npm lockfile in the folder or above it, the exact versions in `package.json` (`"mathjs": "3.10.1"`; ranges such as `^1.2` and the transitive dependencies are unknown) |
 | crates.io | `Cargo.lock` |
 | Go | `go.mod` (with `replace`) |
 | PyPI | `requirements*.txt` (exact `==` pins), `poetry.lock`, `Pipfile.lock`, `uv.lock` |
@@ -262,7 +271,12 @@ command. It runs through the same CLI in this process; this is not a system shel
 `menu`, `console` and `mcp` are refused here. Use `help`, `help secrets`, `history`, `clear`
 and `exit` / `quit` / `0` to return to the menu. History stays in memory for this menu
 session only; recognized secrets, license arguments and refused lines are omitted.
-Each run ends with `done`, `found issues (exit 1)` or `error (exit 2)`.
+Each run ends with `done`, `found issues (exit 1)` or `error (exit 2)`. `guide` works there too.
+
+Item **13 — User guide** (or `jetscan guide`) writes the guide as one offline HTML page to
+`~/.jetscan/guide/` and opens it in your default browser. It shows a "Your plan" box and
+shortens the chapters your license does not unlock. `--lang en|ru` picks the language,
+`--no-open` only prints the path; nothing is sent over the network.
 
 ## AI editors (`jetscan mcp`)
 

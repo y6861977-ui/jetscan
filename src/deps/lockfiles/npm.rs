@@ -4,6 +4,47 @@ use crate::deps::Dep;
 use crate::json::{self, Json};
 use std::collections::HashMap;
 
+/// `package.json` of a project that has no lockfile (bench/BLIND-APPS.md: DVNA pins
+/// `"mathjs": "3.10.1"` and ships no package-lock). Only exact versions (`1.2.3`, `=1.2.3`,
+/// `v1.2.3`) are taken: a range (`^1.2.3`, `~1`, `>=2`, `*`, a tag, a URL) says nothing about what
+/// is installed. Transitive dependencies are unknown without a lockfile.
+pub fn parse_package_json(text: &str) -> Result<Vec<Dep>, String> {
+    let doc = json::parse(text).map_err(|e| format!("not valid JSON: {e}"))?;
+    if doc.as_object().is_none() {
+        return Err("not a package.json object".to_string());
+    }
+    let mut out = Vec::new();
+    for field in ["dependencies", "devDependencies", "optionalDependencies"] {
+        let Some(deps) = doc.get(field).and_then(Json::as_object) else {
+            continue;
+        };
+        let mut names: Vec<&String> = deps.keys().collect();
+        names.sort();
+        for name in names {
+            let Some(spec) = deps[name].as_str() else {
+                continue;
+            };
+            let version = spec.trim().trim_start_matches('=').trim_start_matches('v');
+            if exact_version(version) {
+                push(&mut out, name, version);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `1.2.3` or `1.2.3-beta.1` / `1.2.3+build`: three numeric parts, nothing that makes a range.
+fn exact_version(v: &str) -> bool {
+    let core = v.split(['-', '+']).next().unwrap_or("");
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && !v.contains(' ')
+        && !v.contains("||")
+}
+
 pub fn parse_package_lock(text: &str) -> Result<Vec<Dep>, String> {
     let doc = json::parse(text).map_err(|e| format!("not valid JSON: {e}"))?;
     if doc.as_object().is_none() {
@@ -80,6 +121,25 @@ fn push(out: &mut Vec<Dep>, name: &str, version: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_json_without_lockfile_takes_exact_versions_only() {
+        let deps = parse_package_json(
+            r#"{"dependencies":{"mathjs":"3.10.1","express":"^4.16.0","node-serialize":"=0.0.4","a":"latest","b":"git+https://x/y.git","c":"1.2.3 - 2.0.0","d":"v2.0.0-rc.1"},"devDependencies":{"mocha":"~5.0.0","e":"1.0.0"}}"#,
+        )
+        .unwrap();
+        let got: Vec<(String, String)> = deps.into_iter().map(|d| (d.name, d.version)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("d".to_string(), "2.0.0-rc.1".to_string()),
+                ("mathjs".to_string(), "3.10.1".to_string()),
+                ("node-serialize".to_string(), "0.0.4".to_string()),
+                ("e".to_string(), "1.0.0".to_string()),
+            ]
+        );
+        assert!(parse_package_json("[1]").is_err());
+    }
 
     fn sorted(mut v: Vec<Dep>) -> Vec<(String, String)> {
         v.sort();

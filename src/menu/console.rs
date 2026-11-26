@@ -6,6 +6,7 @@
 //! entry point the command line uses (`exec`, which is `jetscan_main` in the binary, run in
 //! this process with `catch_unwind`). The console never dispatches a shell or arbitrary program;
 //! scanners keep their existing git/curl behavior.
+//! `guide` (also `instructions`, `docs`) opens the user guide in the browser, like the menu item.
 //! A first word that is not a jetscan command is refused, and so are `menu` / `console`
 //! (already here) and `mcp` (a stdio server for AI editors, which would take over this window).
 
@@ -14,7 +15,16 @@ use super::*;
 /// jetscan's own commands, as the first word of a console line (both builds: in the free
 /// build a Pro command explains where it comes from).
 const COMMANDS: &[&str] = &[
-    "scan", "secrets", "deps", "machine", "hook", "license", "resolve",
+    "scan",
+    "secrets",
+    "deps",
+    "machine",
+    "hook",
+    "license",
+    "resolve",
+    "guide",
+    "instructions",
+    "docs",
 ];
 
 /// `help`: the commands of every build.
@@ -35,6 +45,7 @@ const HELP_FREE: &[(&str, &str)] = &[
         "resolve plan [folder]",
         "fix plan for GitHub Actions (alpha)",
     ),
+    ("guide", "the full user guide in your browser (offline)"),
 ];
 
 /// `help`: the jetscan Pro commands of this build.
@@ -168,7 +179,7 @@ enum Line {
     Run(Vec<String>),
 }
 
-const NOT_JETSCAN: &str = "Only jetscan commands work here. Type `help`.";
+const NOT_JETSCAN: &str = "Only jetscan commands work here: `help` lists them, `guide` explains.";
 
 /// Why a jetscan command does not run in the console; `None`: it does.
 fn refused(word: &str) -> Option<String> {
@@ -359,8 +370,8 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
         ));
         self.say("");
         self.hint(
-            "help <command> = its options (e.g. help secrets). history = this session's \
-             commands (sensitive values omitted). \
+            "help <command> = its options (e.g. help secrets). guide = the full user guide in \
+             your browser. history = this session's commands (sensitive values omitted). \
              clear = clear the screen. exit = back to the menu.",
         );
     }
@@ -487,6 +498,9 @@ mod tests {
             "hook install",
             "license",
             "resolve plan .",
+            "guide",
+            "instructions --lang ru",
+            "jetscan docs --no-open",
             "web source .",
             "apk a.apk",
             "android",

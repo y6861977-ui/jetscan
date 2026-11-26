@@ -59,6 +59,8 @@ fn jetscan_colors(
         .env_remove("JETSCAN_LICENSE")
         // No license file of this machine, no ~/.jetscan state: this test's own folder.
         .env("JETSCAN_HOME", cwd)
+        // `jetscan guide` (item 13) never starts a browser from a test.
+        .env("JETSCAN_NO_OPEN", "1")
         // Resolve plans go to the temp folder: keep them inside this test's folder.
         .env("TMP", cwd)
         .env("TEMP", cwd)
@@ -146,7 +148,7 @@ fn the_console_runs_jetscan_commands_in_this_process_and_nothing_else() {
     // Anything else is refused, and nothing was started.
     assert!(out.contains("That is not a jetscan command"), "{out}");
     assert!(
-        out.contains("Only jetscan commands work here. Type `help`."),
+        out.contains("Only jetscan commands work here: `help` lists them, `guide` explains."),
         "{out}"
     );
     assert!(
@@ -289,4 +291,67 @@ fn resolve_applies_and_verifies_after_yes() {
     assert!(out.contains("Equivalent commands:"), "{out}");
     assert!(out.contains("--confirm --root ."), "{out}");
     assert_ne!(fs::read(&file).unwrap(), before);
+}
+
+/// The user guide keeps the same number in free and Pro builds.
+const GUIDE: &str = "13";
+
+/// The guide pages `jetscan guide` wrote under `home`.
+fn guide_pages(home: &Path) -> Vec<PathBuf> {
+    match fs::read_dir(home.join("guide")) {
+        Ok(dir) => dir.map(|e| e.unwrap().path()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[test]
+fn item_13_writes_the_guide_and_says_where() {
+    let t = Temp::new("guide");
+    let (code, out, err) = jetscan(&["menu"], &t.0, &format!("{GUIDE}\n\n0\n"));
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(
+        out.contains("New here? 13 opens the guide in your browser."),
+        "{out}"
+    );
+    assert!(
+        out.contains("    13   User guide — opens in your browser, works offline"),
+        "{out}"
+    );
+    assert!(out.contains("Running: jetscan guide"), "{out}");
+    // Not a terminal (and JETSCAN_NO_OPEN): the page is written, no browser is started.
+    assert!(
+        out.contains("Guide for your plan (Free) written: "),
+        "{out}"
+    );
+    assert!(out.contains("Open that file in any web browser"), "{out}");
+    assert!(out.contains("Equivalent command:"), "{out}");
+    let pages = guide_pages(&t.0);
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    let name = pages[0].file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        name.starts_with("jetscan-guide-") && name.ends_with(".html"),
+        "{name}"
+    );
+    assert!(out.contains(&name), "{out}");
+    assert!(out.trim_end().ends_with("Bye."), "{out}");
+}
+
+#[test]
+fn the_console_opens_the_guide_too() {
+    let t = Temp::new("console-guide");
+    let script = format!("{CONSOLE}\nhelp\nguide --lang ru\nhelp guide\nexit\n0\n");
+    let (code, out, err) = jetscan(&["menu"], &t.0, &script);
+    assert_eq!(code, 0, "{out}\n{err}");
+    assert!(
+        out.contains("the full user guide in your browser (offline)"),
+        "{out}"
+    );
+    assert!(out.contains("guide = the full user"), "{out}");
+    assert!(out.contains("jetscan-guide-"), "{out}");
+    assert!(out.contains("-ru.html"), "{out}");
+    assert!(
+        out.contains("usage: jetscan guide [--lang en|ru] [--no-open]"),
+        "{out}"
+    );
+    assert_eq!(guide_pages(&t.0).len(), 1);
 }

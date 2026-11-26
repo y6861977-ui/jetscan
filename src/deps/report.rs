@@ -143,7 +143,7 @@ pub fn render_text(r: &DepsReport) -> String {
         out.push_str(&format!(
             "\n{}\n{}\n",
             ui::yellow("! No lockfiles found — nothing was checked."),
-            ui::dim("  Looked for: package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, go.mod, requirements*.txt, poetry.lock, Pipfile.lock, uv.lock")
+            ui::dim("  Looked for: package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, go.mod, requirements*.txt, poetry.lock, Pipfile.lock, uv.lock (or package.json with exact versions when there is no npm lockfile)")
         ));
         return out;
     }

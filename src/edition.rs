@@ -10,7 +10,7 @@ pub const PRO: bool = cfg!(feature = "pro");
 /// Where jetscan Pro and jetscan Teams keys are sold.
 pub const SITE: &str = "https://jetscan.jet.kim";
 
-/// `0.4.0` in the free build, `0.4.0 (Pro)` in jetscan Pro.
+/// `0.5.0` in the free build, `0.5.0 (Pro)` in jetscan Pro.
 pub fn version() -> String {
     let v = env!("CARGO_PKG_VERSION");
     if PRO {

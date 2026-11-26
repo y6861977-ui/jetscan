@@ -58,7 +58,10 @@ pub fn lookup(rule_id: &str) -> Resolver {
         | "IOS-SECRET-004"
         | "IOS-SIGNING-005" => Resolver::Credential,
         "WEB-XSS-003" | "WEB-AUTH-004" | "WEB-CORS-006" | "WEB-DEBUG-007" | "WEB-RLS-009"
-        | "WEB-FIREBASE-010" => Resolver::WebReview,
+        | "WEB-FIREBASE-010" | "WEB-SQL-011" | "WEB-HASH-012" | "WEB-XXE-013"
+        | "WEB-REDIRECT-014" | "WEB-PATH-015" | "WEB-SSRF-016" | "WEB-RANDOM-017"
+        | "WEB-ERROR-018" | "WEB-MASS-019" | "WEB-UPLOAD-020" | "WEB-CRYPTO-021"
+        | "WEB-EXEC-022" => Resolver::WebReview,
         "APK-EXPORT-001" | "APK-DEBUG-002" | "APK-NET-003" | "APK-BACKUP-004" | "APK-PERMS-005" => {
             Resolver::ApkReview
         }
@@ -73,7 +76,13 @@ pub fn lookup(rule_id: &str) -> Resolver {
         | "ANDROID-TLS-011"
         | "ANDROID-CRYPTO-012"
         | "ANDROID-STORAGE-013"
-        | "ANDROID-LOG-014" => Resolver::ApkReview,
+        | "ANDROID-LOG-014"
+        | "ANDROID-SQL-015"
+        | "ANDROID-CODELOAD-016"
+        | "ANDROID-HOSTCHECK-017"
+        | "ANDROID-INTENT-018"
+        | "ANDROID-BACKDOOR-019"
+        | "ANDROID-NATIVE-020" => Resolver::ApkReview,
         // iOS source audit: change the plist / entitlements / build settings / code in Xcode.
         "IOS-ATS-001"
         | "IOS-URLSCHEME-002"

@@ -1,9 +1,13 @@
 # jetscan user guide
 
-This guide covers the free jetscan 0.4.0, with a short overview of jetscan Pro. Every command, option and
+This guide covers the free jetscan 0.5.0, with a short overview of jetscan Pro. Every command, option and
 message below was checked against the program itself. The example outputs are real runs on
 small demo projects, shortened where marked with `…`. If this guide and `jetscan --help`
 ever disagree, trust `--help` and tell us.
+
+Open this guide any time with `jetscan guide` (menu item 13): it opens in your browser,
+offline, and shows what your plan unlocks. See
+[The guide in your browser](#the-guide-in-your-browser-item-13).
 
 Plain-language rule of thumb: you can read this guide top to bottom, or jump to the part you
 need. Words that may be new are explained in the [glossary](#10-glossary).
@@ -91,7 +95,7 @@ Options for both installers (environment variables):
 
 | Variable | Meaning |
 |---|---|
-| `JETSCAN_VERSION` | install a specific version, for example `JETSCAN_VERSION=v0.4.0` (default: latest) |
+| `JETSCAN_VERSION` | install a specific version, for example `JETSCAN_VERSION=v0.5.0` (default: latest) |
 | `JETSCAN_INSTALL_DIR` | macOS/Linux only: where to put the file (default `~/.local/bin`) |
 
 ### Manual download and checking SHA256 yourself
@@ -111,14 +115,14 @@ Compare the archive's SHA-256 with its line in `SHA256SUMS`:
 
 ```powershell
 # Windows (PowerShell)
-Get-FileHash .\jetscan-v0.4.0-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+Get-FileHash .\jetscan-v0.5.0-x86_64-pc-windows-msvc.zip -Algorithm SHA256
 ```
 
 ```sh
 # Linux
 sha256sum -c SHA256SUMS --ignore-missing
 # macOS
-shasum -a 256 jetscan-v0.4.0-aarch64-apple-darwin.tar.gz
+shasum -a 256 jetscan-v0.5.0-aarch64-apple-darwin.tar.gz
 ```
 
 If the two values differ, do not run the file.
@@ -127,7 +131,7 @@ If the two values differ, do not run the file.
 
 jetscan Pro is a **separate, closed-source build** (the free build cannot run Pro checks,
 even with a key). See [6. jetscan Pro](#6-jetscan-pro) and <https://jetscan.jet.kim>.
-`jetscan --version` prints `jetscan 0.4.0 (Pro)` for the Pro build and `jetscan 0.4.0` for
+`jetscan --version` prints `jetscan 0.5.0 (Pro)` for the Pro build and `jetscan 0.5.0` for
 the free one.
 
 ### Building from source
@@ -144,6 +148,7 @@ cargo test
 - Or type a command, for example `jetscan scan .` in your project folder (`.` means "this
   folder").
 - `jetscan --help` lists every command and option; `jetscan --version` shows the version.
+- `jetscan guide` opens this guide in your browser (offline).
 
 Windows may show a SmartScreen warning for a program downloaded from the internet; this is a
 general Windows behaviour for new programs, not something jetscan detects. Check the SHA256
@@ -158,6 +163,7 @@ Everything lives in one folder in your home directory, `~/.jetscan`
 |---|---|
 | `osv-cache/` | cached OSV answers (24 hours) |
 | `license` | your license key, if you put it there |
+| `guide/` | the page `jetscan guide` opens (rewritten each time) |
 
 ## 3. The menu and the console
 
@@ -165,8 +171,9 @@ Run `jetscan` with no arguments in a terminal (or double-click it) and you get t
 (free build):
 
 ```
-  jetscan 0.4.0  —  security scanner
+  jetscan 0.5.0  —  security scanner
   Everything runs on this computer. Your code and files are never uploaded.
+  New here? 13 opens the guide in your browser.
 
   CHECK A PROJECT
      1   Leaked secrets, vulnerable packages and risky GitHub Actions
@@ -178,6 +185,7 @@ Run `jetscan` with no arguments in a terminal (or double-click it) and you get t
      5   License status / where to buy
      6   Connect jetscan to your AI editor (Claude Code, Cursor, VS Code…)
     12   jetscan console — type jetscan commands
+    13   User guide — opens in your browser, works offline
 
   JETSCAN PRO
          jetscan Pro adds website, APK, Android, iOS and live-site checks
@@ -211,6 +219,7 @@ How the menu works:
 | 5 | Shows your license: plan, expiry date, what it unlocks. | `jetscan license` |
 | 6 | Prints the setup for AI editors with the full path of your jetscan filled in. If Claude Code is installed, it offers to run the setup command for you (only if you type `yes`). | see [7](#7-ai-editors-mcp) |
 | 12 | The jetscan console (below). | — |
+| 13 | Opens this guide in your browser (below). | `jetscan guide` |
 | 0 | Quit. | — |
 
 ### The console (item 12)
@@ -228,10 +237,12 @@ jetscan> help
   hook install [repo]         git pre-commit hook that blocks secrets
   license                     license key: plan, expiry, what it unlocks
   resolve plan [folder]       fix plan for GitHub Actions (alpha)
+  guide                       the full user guide in your browser (offline)
     jetscan Pro adds web, apk, android, ios and url: https://jetscan.jet.kim
-    help <command> = its options (e.g. help secrets). history = this session's
-    commands (sensitive values omitted). clear = clear the screen. exit = back
-    to the menu.
+
+    help <command> = its options (e.g. help secrets). guide = the full user
+    guide in your browser. history = this session's commands (sensitive values
+    omitted). clear = clear the screen. exit = back to the menu.
 ```
 
 Examples you can type:
@@ -241,22 +252,55 @@ jetscan> secrets . --no-history
 jetscan> jetscan scan "C:\My Projects\app"
 jetscan> deps . --offline
 jetscan> help secrets
+jetscan> guide --lang ru
 jetscan> history
 ```
 
 What to know:
 
 - Only jetscan's own commands run here. **It is not a system shell**: `dir`, `ls`, `cd` and
-  the like answer `That is not a jetscan command.`
+  the like answer `That is not a jetscan command.` and
+  `` Only jetscan commands work here: `help` lists them, `guide` explains. ``
 - `menu`, `console` and `mcp` are refused here (you are already in the menu).
 - Paths with spaces go in "double quotes". Dragging a file or folder into the window adds
   the quotes for you.
 - Built-in words: `help`, `help <command>`, `history`, `clear`, `exit` / `quit` / `0` (back
-  to the menu).
+  to the menu). `guide` opens this guide, like item 13.
 - History lives only in memory until the menu closes. Lines that contain a recognised
   secret, license arguments and refused lines are shown as `[refused command]` or
   `[arguments omitted]`, never in full.
 - Each run ends with `done`, `found issues (exit 1)` or `error (exit 2)`.
+
+### The guide in your browser (item 13)
+
+`jetscan guide` (also `jetscan instructions` or `jetscan docs`, and menu item 13) opens this
+guide as one page in your web browser. The guide is built into jetscan: it works offline and
+nothing is sent over the network.
+
+```
+jetscan guide [--lang en|ru] [--no-open]
+```
+
+The page is made for the plan on this computer. A **Your plan** box at the top names the plan
+(Free, Trial, One-time audit, Pro or Teams), what it unlocks, the expiry date and the trial
+scans left. Chapters your plan does not unlock are shortened to a few lines that say what
+unlocks them. The key and the trial counter are only read.
+
+The page is saved as `~/.jetscan/guide/jetscan-guide-<version>-<lang>.html` (replaced each
+time) and the path is always printed:
+
+```
+Guide for your plan (Free) opened: C:\Users\you\.jetscan\guide\jetscan-guide-0.5.0-en.html
+```
+
+- **Language**: `--lang en` or `--lang ru`. Without it, Russian if `LC_ALL`, `LC_MESSAGES` or
+  `LANG` (the first one that is set) starts with `ru`, otherwise English. Windows usually sets
+  none of them, so type `--lang ru` there.
+- **No browser**: with `--no-open`, when `JETSCAN_NO_OPEN` is set, or when the output is not a
+  terminal (a pipe, CI), jetscan only writes the page, prints its path and says
+  `Open that file in any web browser`. The same happens if the browser cannot be started.
+- The browser is started with the page as its only argument (`explorer.exe` on Windows, `open`
+  on macOS, `xdg-open` on Linux with a desktop), never through a shell.
 
 ## 4. Free checks
 
@@ -348,6 +392,14 @@ Resend, SendGrid, Twilio, Mailgun, Discord, Shopify and DigitalOcean keys; priva
 keys in `.env`, `.npmrc`, `.pypirc`, `.git-credentials`, `.docker/config.json`; stored
 passwords in credential files such as `.netrc` and `.pgpass` and FTP/SFTP client configs.
 
+**Secrets in code**: a key passed as a string straight into a crypto call (`createHmac`,
+`jwt.sign` / `jwt.verify`, `jwt.encode`, `hmac.new`, `SecretKeySpec`, `SignedString`); a
+hardcoded fallback for a secret environment variable (`process.env.JWT_SECRET || "…"`,
+`os.getenv("SECRET_KEY", "…")`, Laravel `env()`). If the variable is missing in production,
+the app quietly signs tokens with that fallback, so even `"secret"` counts. A password
+compared with a hardcoded value is reported with low confidence: review it. These three
+checks skip documentation files (`.md`, `.rst`, `.txt`), where such lines are examples.
+
 Useful options:
 
 | Option | What it does |
@@ -402,7 +454,7 @@ Scanned 6 files
 
 | Ecosystem | Lockfiles |
 |---|---|
-| npm | `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` (classic and Berry), `pnpm-lock.yaml` (v5, v6, v9) |
+| npm | `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` (classic and Berry), `pnpm-lock.yaml` (v5, v6, v9); with no npm lockfile in the folder or above it, the exact versions in `package.json` (`"mathjs": "3.10.1"`; ranges such as `^1.2` and the transitive dependencies are unknown) |
 | crates.io (Rust) | `Cargo.lock` |
 | Go | `go.mod` (with `replace`) |
 | PyPI (Python) | `requirements*.txt` (exact `==` pins), `poetry.lock`, `Pipfile.lock`, `uv.lock` |
@@ -829,7 +881,7 @@ If the file already exists, add only the `"jetscan"` entry. Then restart the edi
 its MCP servers. The Cursor and VS Code configs follow those editors' documentation but have
 not been tested against them yet. If `jetscan` is not on your `PATH`, put its full path in
 `"command"` (on Windows with double backslashes, `"C:\\Tools\\jetscan.exe"`). More editors
-and details: [docs/mcp/README.md](../mcp/README.md).
+and details: [docs/mcp/README.md](https://github.com/y6861977-ui/jetscan/blob/main/docs/mcp/README.md).
 
 ### What the AI gets
 
@@ -854,7 +906,7 @@ your call. Without a key, a Pro tool returns a short notice instead of scanning.
 
 ### Troubleshooting
 
-- Logs go to stderr: `jetscan mcp 0.4.0: serving on stdio, workspace <folder>`. Most editors
+- Logs go to stderr: `jetscan mcp 0.5.0: serving on stdio, workspace <folder>`. Most editors
   show it in their MCP logs.
 - `refused: … is outside the workspace` → start the server in the project or add
   `--root <project>`.
@@ -903,6 +955,7 @@ Tips:
   leaked secrets and vulnerabilities of unknown severity always fail.
 - Pin actions to a commit SHA in your own workflows (jetscan's own check will remind you).
 
+<!-- jetscan:plan ci -->
 ### jetscan Teams in CI: SARIF, SBOM, baseline
 
 These need a **Teams** key in `JETSCAN_LICENSE` (store it as a CI secret):
@@ -955,6 +1008,7 @@ Without a Teams key these flags stop with a clear message (exit 2) and nothing e
 The install script installs the free build. The Pro audits in CI need the Pro build from your
 account; it has no public install script.
 
+<!-- jetscan:end -->
 ## 9. Troubleshooting and FAQ
 
 **Is my code uploaded anywhere?** No. Secret scanning, the GitHub Actions check, machine,

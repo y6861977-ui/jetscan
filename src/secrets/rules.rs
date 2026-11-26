@@ -1,6 +1,10 @@
 //! Правила для ключей провайдеров.
 //! Без regex: ручные матчеры «префикс + алфавит + длина + границы слова».
 
+use super::code::{
+    CHECK_TRIGGERS, FALLBACK_TRIGGERS, KEY_TRIGGERS, find_fallback_secret,
+    find_hardcoded_crypto_key, find_password_check,
+};
 use super::{Confidence, Hit, Rule, RuleInfo, Span};
 use std::sync::OnceLock;
 
@@ -106,6 +110,15 @@ rules! {
         Triggers::any(&["://"]) },
     { "digitalocean-token", "DigitalOcean Token", High, find_digitalocean_token,
         Triggers::any(&["dop_v1_", "doo_v1_", "dor_v1_"]) },
+    // Секреты, видные по коду, а не по формату (`code.rs`). В конце таблицы: правило провайдера
+    // на том же значении остаётся первым.
+    { "hardcoded-crypto-key", "Hardcoded signing or encryption key", Medium,
+        find_hardcoded_crypto_key, Triggers::any(KEY_TRIGGERS) },
+    { "fallback-secret", "Hardcoded fallback for a secret", Medium, find_fallback_secret,
+        Triggers { literals: FALLBACK_TRIGGERS, ignore_case: true, min_len: 0 } },
+    { "hardcoded-password-check", "Password checked against a hardcoded value", Low,
+        find_password_check,
+        Triggers { literals: CHECK_TRIGGERS, ignore_case: true, min_len: 0 } },
 }
 
 // Маска кандидатов — u128: правил не больше 128 (иначе — не компилируется).
@@ -1146,6 +1159,9 @@ mod tests {
                 "private-key",
                 "url-credentials",
                 "digitalocean-token",
+                "hardcoded-crypto-key",
+                "fallback-secret",
+                "hardcoded-password-check",
             ]
         );
     }
@@ -2130,6 +2146,22 @@ mod prefilter_tests {
                 "digitalocean-token",
                 format!("ключ='{}{}'", "dop_v1_", "0123456789aBcDeF".repeat(4)),
             ),
+            (
+                "hardcoded-crypto-key",
+                "crypto.createHmac(~sha256~, ~k3y-for-tests~).update(d)".replace('~', "'"),
+            ),
+            (
+                "fallback-secret",
+                "const s = process.env.JWT_SECRET || ~secret~;".replace('~', "'"),
+            ),
+            (
+                "fallback-secret",
+                "KEY = os.getenv(~SECRET_KEY~, ~dev-only~)".replace('~', "'"),
+            ),
+            (
+                "hardcoded-password-check",
+                "if (password === ~letme1n~) {".replace('~', "'"),
+            ),
         ]
     }
 
@@ -2240,11 +2272,9 @@ mod prefilter_tests {
             assert_prefilter_agrees(&line);
             matched += usize::from(!super::super::scan_line(all(), 1, &line).is_empty());
         }
-        // The generator must actually produce findings, or the test proves nothing.
-        assert!(
-            matched > 1_000,
-            "only {matched} generated lines had findings"
-        );
+        // The generator must actually produce findings, or the test proves nothing. (Every
+        // trigger literal is a fragment too, so more rules mean fewer complete examples per line.)
+        assert!(matched > 600, "only {matched} generated lines had findings");
     }
 
     #[test]

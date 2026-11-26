@@ -35,6 +35,7 @@ pub fn find_lockfiles(root: &Path) -> Result<Vec<Found>, String> {
     }
 
     let mut out = Vec::new();
+    let mut manifests: Vec<Found> = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
@@ -67,18 +68,82 @@ pub fn find_lockfiles(root: &Path) -> Result<Vec<Found>, String> {
                     .to_string_lossy()
                     .replace('\\', "/");
                 out.push(Found { path, rel, kind });
+            } else if ft.is_file() && name == "package.json" {
+                let path = entry.path();
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                manifests.push(Found {
+                    path,
+                    rel,
+                    kind: &lockfiles::PACKAGE_JSON,
+                });
             }
         }
         for d in subdirs {
             stack.push((d, depth + 1));
         }
     }
+    // A package.json counts only where no npm lockfile covers it (same folder or above: a
+    // workspace root lockfile covers every package below it).
+    let npm_dirs: Vec<String> = out
+        .iter()
+        .filter(|f| f.kind.ecosystem == lockfiles::PACKAGE_JSON.ecosystem)
+        .map(|f| parent_dir(&f.rel))
+        .collect();
+    for m in manifests {
+        let dir = parent_dir(&m.rel);
+        let covered = npm_dirs
+            .iter()
+            .any(|d| d.is_empty() || dir == *d || dir.starts_with(&format!("{d}/")));
+        if !covered {
+            out.push(m);
+        }
+    }
     out.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(out)
 }
 
+fn parent_dir(rel: &str) -> String {
+    rel.rsplit_once('/')
+        .map_or(String::new(), |(d, _)| d.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn package_json_counts_only_where_no_npm_lockfile_covers_it() {
+        let d = std::env::temp_dir().join(format!("jetscan-pkgjson-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        for dir in ["", "app", "mono/packages/a", "py"] {
+            fs::create_dir_all(d.join(dir)).unwrap();
+        }
+        fs::write(d.join("app/package.json"), "{}").unwrap();
+        fs::write(d.join("mono/package-lock.json"), "{}").unwrap();
+        fs::write(d.join("mono/package.json"), "{}").unwrap();
+        fs::write(d.join("mono/packages/a/package.json"), "{}").unwrap();
+        fs::write(d.join("py/requirements.txt"), "").unwrap();
+        fs::write(d.join("py/package.json"), "{}").unwrap();
+        let found: Vec<(String, &str)> = find_lockfiles(&d)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.rel, f.kind.label))
+            .collect();
+        let _ = fs::remove_dir_all(&d);
+        assert_eq!(
+            found,
+            vec![
+                ("app/package.json".to_string(), "package.json"),
+                ("mono/package-lock.json".to_string(), "package-lock.json"),
+                ("py/package.json".to_string(), "package.json"),
+                ("py/requirements.txt".to_string(), "requirements.txt"),
+            ]
+        );
+    }
+
     use super::*;
 
     #[test]

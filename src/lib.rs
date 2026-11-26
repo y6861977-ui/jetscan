@@ -14,6 +14,7 @@ pub mod combined;
 pub mod deps;
 pub mod edition;
 pub mod finding_v2;
+pub mod guide;
 pub mod hash;
 pub mod hook;
 pub mod html;

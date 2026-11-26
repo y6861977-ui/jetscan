@@ -13,8 +13,9 @@
 //! The "jetscan console" item (`menu/console.rs`) is a prompt that accepts jetscan commands
 //! only; it runs them through `exec` too and never starts any other program.
 //!
-//! Items 1-6 and 12 (the console) are the same in every build. jetscan Pro (`menu/pro.rs`)
-//! adds 7-11. The console sits in the FIX AND TOOLS group.
+//! Items 1-6, 12 (the console) and 13 (the user guide, `jetscan guide`) are the same in every
+//! build. jetscan Pro (`menu/pro.rs`) adds 7-11. The console and the guide sit in the FIX AND
+//! TOOLS group.
 
 use jetscan::finding_v2::{RedactionPolicy, RemediationState};
 use jetscan::resolve::ResolvePlan;
@@ -104,6 +105,8 @@ mod console;
 mod pro;
 /// Stable in free and Pro builds; numbers 7-11 belong to Pro.
 const CONSOLE: &str = "12";
+/// `jetscan guide`: the user guide in the browser. Stable in free and Pro builds.
+const GUIDE: &str = "13";
 
 /// Whether `jetscan` without arguments should open the menu instead of printing usage.
 pub fn interactive() -> bool {
@@ -149,6 +152,7 @@ pub fn run<R: BufRead, W: Write>(
             "5" => s.license(),
             "6" => s.connect(),
             c if c == CONSOLE => s.console(),
+            c if c == GUIDE => s.guide(),
             "0" | "q" | "quit" | "exit" => return s.bye(),
             "" => continue,
             other => match s.pro_choice(other) {
@@ -271,6 +275,12 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             "  {}",
             ui::dim("Everything runs on this computer. Your code and files are never uploaded.")
         ));
+        self.say(&format!(
+            "  {}",
+            ui::dim(&format!(
+                "New here? {GUIDE} opens the guide in your browser."
+            ))
+        ));
     }
 
     fn show_menu(&mut self) {
@@ -299,6 +309,11 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
             None,
         );
         self.item(CONSOLE, "jetscan console — type jetscan commands", None);
+        self.item(
+            GUIDE,
+            "User guide — opens in your browser, works offline",
+            None,
+        );
         self.group("JETSCAN PRO");
         self.pro_menu();
         self.say("");
@@ -516,6 +531,12 @@ impl<R: BufRead, W: Write> Session<'_, R, W> {
 
     fn license(&mut self) -> Step<()> {
         self.run(vec!["license".to_string()]);
+        Ok(())
+    }
+
+    /// `jetscan guide`: writes the guide page and opens it in the browser.
+    fn guide(&mut self) -> Step<()> {
+        self.run(vec!["guide".to_string()]);
         Ok(())
     }
 
@@ -966,11 +987,16 @@ mod tests {
         }
         let found = items(&text);
         let keys: Vec<usize> = found.iter().map(|i| i.0).collect();
-        // The console is always 12; the free build has no items 7-11.
+        // The console is always 12, the guide 13; the free build has no items 7-11.
         let console: usize = CONSOLE.parse().unwrap();
-        assert_eq!(console, 12);
+        let guide: usize = GUIDE.parse().unwrap();
+        assert_eq!((console, guide), (12, 13));
         let pro = if cfg!(feature = "pro") { 7..12 } else { 7..7 };
-        let want: Vec<usize> = (1..=6).chain([console]).chain(pro).chain([0]).collect();
+        let want: Vec<usize> = (1..=6)
+            .chain([console, guide])
+            .chain(pro)
+            .chain([0])
+            .collect();
         assert_eq!(keys, want, "{text}");
         let tools = lines
             .iter()
@@ -985,6 +1011,17 @@ mod tests {
             .position(|l| l.contains("jetscan console — type jetscan commands"))
             .unwrap();
         assert!(tools < at && at < pro, "{text}");
+        let at = lines
+            .iter()
+            .position(|l| l.contains("13   User guide — opens in your browser"))
+            .unwrap();
+        assert!(tools < at && at < pro, "{text}");
+        assert!(
+            lines[..tools]
+                .iter()
+                .any(|l| l.trim() == "New here? 13 opens the guide in your browser."),
+            "{text}"
+        );
         assert!(found.iter().all(|i| i.1 == NUMBER + 3));
         let tags: Vec<usize> = found.iter().filter_map(|i| i.2).collect();
         assert_eq!(tags.len(), if cfg!(feature = "pro") { 6 } else { 1 });
@@ -1226,6 +1263,7 @@ mod tests {
             ("4\n\n".into(), strings(&["machine"])),
             ("4\nyes\n".into(), strings(&["machine", "--deps"])),
             ("5\n".into(), strings(&["license"])),
+            ("13\n".into(), strings(&["guide"])),
         ];
         for (script, want) in cases {
             let (code, text, ran) = drive(&format!("{script}\n0\n"), &t.0, &mut |_| 0);

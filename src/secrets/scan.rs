@@ -104,6 +104,7 @@ pub fn scan_with(
             let rel = relative(root, path, meta.is_dir());
             let rel_str = slash_path(&rel);
             let mut hits: Vec<Hit> = scan_text_with_ignores(text);
+            hits.retain(|h| super::code::applies_to(h.rule.id, &rel_str));
             widen_private_keys(&mut hits, text);
             if special::is_special(path) {
                 hits.extend(
@@ -331,6 +332,7 @@ impl GitLineScanner {
             return;
         }
         let mut hits = rules::scan_line(hl.line, hl.text);
+        hits.retain(|h| super::code::applies_to(h.rule.id, hl.path));
         // Спецфайлы построчные (.env, .npmrc, .pypirc, .git-credentials) работают и по строке.
         let as_path = Path::new(hl.path);
         if special::is_special(as_path) {

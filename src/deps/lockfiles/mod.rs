@@ -89,6 +89,15 @@ pub static KINDS: &[Kind] = &[
     },
 ];
 
+/// `package.json` in a folder with no npm lockfile above it (see `discover`): exact versions only.
+/// Not in `KINDS`: a `package.json` next to a lockfile is not read as one.
+pub static PACKAGE_JSON: Kind = Kind {
+    label: "package.json",
+    ecosystem: Ecosystem::Npm,
+    matches: |n| n == "package.json",
+    parse: npm::parse_package_json,
+};
+
 /// Вид lockfile'а по имени файла.
 pub fn kind_for(file_name: &str) -> Option<&'static Kind> {
     KINDS.iter().find(|k| (k.matches)(file_name))
